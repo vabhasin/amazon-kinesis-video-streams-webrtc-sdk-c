@@ -1630,6 +1630,15 @@ typedef struct {
 } PeerConnectionMetrics, *PPeerConnectionMetrics;
 
 /**
+ * @brief TWCC metrics for delay-based congestion control.
+ * Retrieved via getCurrentTwccMetrics().
+ */
+typedef struct {
+    DOUBLE delayTrendMs;  //!< EMA-smoothed trendline slope (ms). Positive = congestion building, negative = draining, ~0 = stable.
+    DOUBLE queueDelayMs;  //!< Accumulated one-way delay variation (ms) from the last TWCC window.
+} TwccMetrics, *PTwccMetrics;
+
+/**
  * @brief The stats object is populated based on RTCStatsType request
  *
  */
@@ -2258,6 +2267,16 @@ PUBLIC_API STATUS iceAgentGetMetrics(PRtcPeerConnection, PKvsIceAgentMetrics);
  * Reference: https://www.w3.org/TR/webrtc/#rtcpeerconnection-interface-extensions-1
  */
 PUBLIC_API STATUS rtcPeerConnectionGetMetrics(PRtcPeerConnection, PRtcRtpTransceiver, PRtcStats);
+
+/**
+ * @brief Get the current TWCC delay-based congestion metrics.
+ *
+ * @param[in] PRtcPeerConnection Peer connection object
+ * @param[in,out] PTwccMetrics TWCC metrics object to be populated
+ *
+ * @return STATUS code of the execution. STATUS_SUCCESS on success
+ */
+PUBLIC_API STATUS getCurrentTwccMetrics(PRtcPeerConnection, PTwccMetrics);
 
 /**
  * @brief Creates an RtcCertificate object

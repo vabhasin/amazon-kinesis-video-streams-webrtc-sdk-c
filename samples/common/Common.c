@@ -667,7 +667,6 @@ VOID sampleBandwidthEstimationHandler(UINT64 customData, DOUBLE maximumBitrate)
 VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, UINT32 rxBytes, UINT32 txPacketsCnt, UINT32 rxPacketsCnt,
                                             UINT64 duration)
 {
-    UNUSED_PARAM(duration);
     UINT64 videoBitrate, audioBitrate;
     UINT64 currentTimeMs, timeDiff;
     UINT32 lostPacketsCnt = txPacketsCnt - rxPacketsCnt;
@@ -679,7 +678,7 @@ VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, U
         return;
     }
 
-    // Calculate packet loss
+    // Calculate packet loss (EMA smoothed)
     pSampleStreamingSession->twccMetadata.averagePacketLoss =
         EMA_ACCUMULATOR_GET_NEXT(pSampleStreamingSession->twccMetadata.averagePacketLoss, ((DOUBLE) percentLost));
 
@@ -690,21 +689,60 @@ VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, U
         return;
     }
 
+    // Get delay-based signal from TWCC trendline
+    TwccMetrics twccMetrics;
+    MEMSET(&twccMetrics, 0, SIZEOF(twccMetrics));
+    getCurrentTwccMetrics(pSampleStreamingSession->pPeerConnection, &twccMetrics);
+
     MUTEX_LOCK(pSampleStreamingSession->twccMetadata.updateLock);
     videoBitrate = pSampleStreamingSession->twccMetadata.currentVideoBitrate;
     audioBitrate = pSampleStreamingSession->twccMetadata.currentAudioBitrate;
 
-    if (pSampleStreamingSession->twccMetadata.averagePacketLoss <= 5) {
-        // increase encoder bitrate by 5 percent with a cap at MAX_BITRATE
-        videoBitrate = (UINT64) MIN(videoBitrate * 1.05, MAX_VIDEO_BITRATE_KBPS);
-        // increase encoder bitrate by 5 percent with a cap at MAX_BITRATE
-        audioBitrate = (UINT64) MIN(audioBitrate * 1.05, MAX_AUDIO_BITRATE_BPS);
-    } else {
-        // decrease encoder bitrate by average packet loss percent, with a cap at MIN_BITRATE
-        videoBitrate = (UINT64) MAX(videoBitrate * (1.0 - pSampleStreamingSession->twccMetadata.averagePacketLoss / 100.0), MIN_VIDEO_BITRATE_KBPS);
-        // decrease encoder bitrate by average packet loss percent, with a cap at MIN_BITRATE
-        audioBitrate = (UINT64) MAX(audioBitrate * (1.0 - pSampleStreamingSession->twccMetadata.averagePacketLoss / 100.0), MIN_AUDIO_BITRATE_BPS);
+    // Determine if either signal indicates congestion
+    BOOL lossCongested = pSampleStreamingSession->twccMetadata.averagePacketLoss > 5.0;
+    BOOL delayCongested = twccMetrics.delayTrendMs > 0.5;
+    BOOL lossClear = pSampleStreamingSession->twccMetadata.averagePacketLoss <= 2.0;
+    BOOL delayClear = twccMetrics.delayTrendMs < -0.005;
+
+    DOUBLE factor = 1.0;
+    if (lossCongested || delayCongested) {
+        // Decrease: use the more aggressive backoff when either signal says congestion
+        DOUBLE lossFactor = 1.0;
+        DOUBLE delayFactor = 1.0;
+        if (pSampleStreamingSession->twccMetadata.averagePacketLoss > 10.0) {
+            lossFactor = 0.7;
+        } else if (lossCongested) {
+            lossFactor = 0.85;
+        }
+        if (twccMetrics.delayTrendMs > 10.0) {
+            delayFactor = 0.7;
+        } else if (delayCongested) {
+            delayFactor = 0.85;
+        }
+        factor = MIN(lossFactor, delayFactor);
+    } else if (lossClear && delayClear) {
+        // Both signals clear: aggressive multiplicative increase
+        // Use faster ramp when near the floor to recover from severe congestion
+        if (videoBitrate < MIN_VIDEO_BITRATE_KBPS * 4) {
+            factor = 1.5;
+        } else {
+            factor = 1.15;
+        }
+    } else if (lossClear || delayClear) {
+        // One signal clear, other neutral: moderate increase
+        if (videoBitrate < MIN_VIDEO_BITRATE_KBPS * 4) {
+            factor = 1.25;
+        } else {
+            factor = 1.08;
+        }
     }
+    // else: both neutral -> hold (factor = 1.0)
+
+    videoBitrate = (UINT64) MAX(MIN(videoBitrate * factor, MAX_VIDEO_BITRATE_KBPS), MIN_VIDEO_BITRATE_KBPS);
+    audioBitrate = (UINT64) MAX(MIN(audioBitrate * factor, MAX_AUDIO_BITRATE_BPS), MIN_AUDIO_BITRATE_BPS);
+
+    // Pause media when at the floor to let congestion clear; resume once recovering
+    pSampleStreamingSession->twccMetadata.mediaPaused = (videoBitrate <= MIN_VIDEO_BITRATE_KBPS);
 
     // Update the session with the new bitrate and adjustment time
     pSampleStreamingSession->twccMetadata.newVideoBitrate = videoBitrate;
@@ -713,9 +751,11 @@ VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, U
 
     pSampleStreamingSession->twccMetadata.lastAdjustmentTimeMs = currentTimeMs;
 
-    DLOGI("Adjustment made: average packet loss = %.2f%%, timediff: %llu ms", pSampleStreamingSession->twccMetadata.averagePacketLoss, timeDiff);
-    DLOGI("Suggested video bitrate %u kbps, suggested audio bitrate: %u bps, sent: %u bytes %u packets received: %u bytes %u packets in %lu msec",
-          videoBitrate, audioBitrate, txBytes, txPacketsCnt, rxBytes, rxPacketsCnt, duration / 10000ULL);
+    DLOGI("BWE adjustment: pktLoss=%.2f%% delayTrend=%.4f ms factor=%.2f lossCongested=%d delayCongested=%d lossClear=%d delayClear=%d",
+          pSampleStreamingSession->twccMetadata.averagePacketLoss, twccMetrics.delayTrendMs, factor, lossCongested, delayCongested, lossClear,
+          delayClear);
+    DLOGI("BWE result: video=%u kbps audio=%u bps | tx: %u bytes %u pkts, rx: %u bytes %u pkts, window: %lu ms", videoBitrate, audioBitrate,
+          txBytes, txPacketsCnt, rxBytes, rxPacketsCnt, duration / 10000ULL);
 }
 
 STATUS handleRemoteCandidate(PSampleStreamingSession pSampleStreamingSession, PSignalingMessage pSignalingMessage)

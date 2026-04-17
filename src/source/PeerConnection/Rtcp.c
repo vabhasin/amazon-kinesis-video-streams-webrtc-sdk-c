@@ -349,6 +349,19 @@ STATUS computeTwccTrendline(PTwccManager pTwccManager, PDOUBLE pDelayTrend, PDOU
     DOUBLE sumX = 0.0, sumY = 0.0, sumXY = 0.0, sumX2 = 0.0;
     DOUBLE rawSlope = 0.0;
     UINT32 n = 0;
+#ifdef TWCC_CSV_DUMP
+    static UINT32 windowId = 0;
+    static BOOL headerWritten = FALSE;
+    CHAR csvLine[256];
+    UINT32 len;
+
+    if (!headerWritten) {
+        PCHAR header = (PCHAR) "windowId,seqNum,n,sendTimeMs,recvTimeMs,interSendMs,interRecvMs,deltaMs,accumDelayMs\n";
+        writeFile((PCHAR) "twcc_dump.csv", FALSE, FALSE, (PBYTE) header, STRLEN(header));
+        headerWritten = TRUE;
+    }
+    windowId++;
+#endif
 
     CHK(pTwccManager != NULL && pDelayTrend != NULL && pQueueDelay != NULL, STATUS_NULL_ARG);
 
@@ -370,6 +383,16 @@ STATUS computeTwccTrendline(PTwccManager pTwccManager, PDOUBLE pDelayTrend, PDOU
             sumY += accumulatedDelay;
             sumXY += (DOUBLE) n * accumulatedDelay;
             sumX2 += (DOUBLE) n * (DOUBLE) n;
+#ifdef TWCC_CSV_DUMP
+            len = (UINT32) SNPRINTF(csvLine, SIZEOF(csvLine), "%u,%u,%u,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n", windowId, seqNum, n,
+                                    (DOUBLE) pCurr->localTimeKvs / HUNDREDS_OF_NANOS_IN_A_MILLISECOND,
+                                    (DOUBLE) pCurr->remoteTimeKvs / HUNDREDS_OF_NANOS_IN_A_MILLISECOND,
+                                    (DOUBLE) interSend / HUNDREDS_OF_NANOS_IN_A_MILLISECOND,
+                                    (DOUBLE) interRecv / HUNDREDS_OF_NANOS_IN_A_MILLISECOND,
+                                    (DOUBLE) (interRecv - interSend) / HUNDREDS_OF_NANOS_IN_A_MILLISECOND,
+                                    accumulatedDelay / HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
+            writeFile((PCHAR) "twcc_dump.csv", FALSE, TRUE, (PBYTE) csvLine, len);
+#endif
             n++;
         }
 
@@ -388,7 +411,7 @@ STATUS computeTwccTrendline(PTwccManager pTwccManager, PDOUBLE pDelayTrend, PDOU
     *pDelayTrend = pTwccManager->smoothedSlope / HUNDREDS_OF_NANOS_IN_A_MILLISECOND;
     *pQueueDelay = accumulatedDelay / HUNDREDS_OF_NANOS_IN_A_MILLISECOND;
 
-    DLOGI("TWCC trendline rawTrend=%.4f delayTrend=%.4f ms queueDelay=%.2f ms", rawSlope / HUNDREDS_OF_NANOS_IN_A_MILLISECOND,
+    DLOGD("TWCC trendline rawTrend=%.4f delayTrend=%.4f ms queueDelay=%.2f ms", rawSlope / HUNDREDS_OF_NANOS_IN_A_MILLISECOND,
           *pDelayTrend, *pQueueDelay);
 
 CleanUp:

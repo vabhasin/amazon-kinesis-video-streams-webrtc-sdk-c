@@ -312,6 +312,9 @@ INT32 lwsWssCallbackRoutine(PVOID wsi, INT32 reason, PVOID user, PVOID pDataIn, 
         case LWS_CALLBACK_CLIENT_RECEIVE:
         case LWS_CALLBACK_CLIENT_WRITEABLE:
             break;
+        case LWS_CALLBACK_CLIENT_RECEIVE_PONG:
+            DLOGI("Receive Signaling WSS pong");
+            break;
         default:
             DLOGI("WSS callback with reason %d", reason);
             CHK(FALSE, retStatus);

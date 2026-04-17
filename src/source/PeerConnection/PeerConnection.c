@@ -2058,3 +2058,27 @@ CleanUp:
     LEAVES();
     return retStatus;
 }
+
+STATUS getCurrentTwccMetrics(PRtcPeerConnection pPeerConnection, PTwccMetrics pTwccMetrics)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    PKvsPeerConnection pKvsPeerConnection = (PKvsPeerConnection) pPeerConnection;
+
+    CHK(pKvsPeerConnection != NULL && pTwccMetrics != NULL, STATUS_NULL_ARG);
+    CHK(pKvsPeerConnection->pTwccManager != NULL, STATUS_SUCCESS);
+
+    MUTEX_LOCK(pKvsPeerConnection->twccLock);
+    pTwccMetrics->delayTrendMs = pKvsPeerConnection->pTwccManager->smoothedSlope / HUNDREDS_OF_NANOS_IN_A_MILLISECOND;
+    MUTEX_UNLOCK(pKvsPeerConnection->twccLock);
+
+    // queueDelay is computed per TWCC window in computeTwccTrendline and not stored persistently.
+    // Set to 0 here; the delay trend is the primary signal for congestion control decisions.
+    pTwccMetrics->queueDelayMs = 0.0;
+
+CleanUp:
+    CHK_LOG_ERR(retStatus);
+
+    LEAVES();
+    return retStatus;
+}

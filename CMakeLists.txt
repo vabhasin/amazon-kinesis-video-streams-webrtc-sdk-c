@@ -23,6 +23,7 @@ option(INSTRUMENTED_ALLOCATORS "Enable memory instrumentation" OFF)
 option(ENABLE_AWS_SDK_IN_TESTS "Enable support for compiling AWS SDKs for tests" ON)
 option(ENABLE_STATS_CALCULATION_CONTROL "Enable support for runtime control of ice agent stat calculations." OFF)
 option(BUILD_OLD_MBEDTLS_VERSION "Use MbedTLS version 2.28.8." OFF)
+option(TWCC_CSV_DUMP "Write TWCC to file" ON)
 
 # Developer Flags
 option(BUILD_TEST "Build the testing tree." OFF)
@@ -145,6 +146,10 @@ endif()
 
 if (ENABLE_STATS_CALCULATION_CONTROL)
   add_definitions(-DENABLE_STATS_CALCULATION_CONTROL)
+endif()
+
+if (TWCC_CSV_DUMP)
+  add_definitions(-DTWCC_CSV_DUMP)
 endif()
 
 if(USE_OPENSSL)
