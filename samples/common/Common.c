@@ -667,6 +667,7 @@ VOID sampleBandwidthEstimationHandler(UINT64 customData, DOUBLE maximumBitrate)
 VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, UINT32 rxBytes, UINT32 txPacketsCnt, UINT32 rxPacketsCnt,
                                             UINT64 duration)
 {
+    static BOOL bweTargetHeaderWritten = FALSE;
     UINT64 videoBitrate, audioBitrate;
     UINT64 currentTimeMs, timeDiff;
     UINT32 lostPacketsCnt = txPacketsCnt - rxPacketsCnt;
@@ -685,7 +686,6 @@ VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, U
     currentTimeMs = GETTIME();
     timeDiff = currentTimeMs - pSampleStreamingSession->twccMetadata.lastAdjustmentTimeMs;
     if (timeDiff < TWCC_BITRATE_ADJUSTMENT_INTERVAL_MS) {
-        // Too soon for another adjustment
         return;
     }
 
@@ -702,11 +702,10 @@ VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, U
     BOOL lossCongested = pSampleStreamingSession->twccMetadata.averagePacketLoss > 5.0;
     BOOL delayCongested = twccMetrics.delayTrendMs > 0.5;
     BOOL lossClear = pSampleStreamingSession->twccMetadata.averagePacketLoss <= 2.0;
-    BOOL delayClear = twccMetrics.delayTrendMs < -0.005;
+    BOOL delayClear = twccMetrics.delayTrendMs < -0.01;
 
     DOUBLE factor = 1.0;
     if (lossCongested || delayCongested) {
-        // Decrease: use the more aggressive backoff when either signal says congestion
         DOUBLE lossFactor = 1.0;
         DOUBLE delayFactor = 1.0;
         if (pSampleStreamingSession->twccMetadata.averagePacketLoss > 10.0) {
@@ -714,37 +713,25 @@ VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, U
         } else if (lossCongested) {
             lossFactor = 0.85;
         }
-        if (twccMetrics.delayTrendMs > 10.0) {
+        if (twccMetrics.delayTrendMs > 5.0) {
             delayFactor = 0.7;
-        } else if (delayCongested) {
+        } else if (twccMetrics.delayTrendMs > 1.0) {
             delayFactor = 0.85;
+        } else if (delayCongested) {
+            delayFactor = 0.95;
         }
         factor = MIN(lossFactor, delayFactor);
     } else if (lossClear && delayClear) {
-        // Both signals clear: aggressive multiplicative increase
-        // Use faster ramp when near the floor to recover from severe congestion
-        if (videoBitrate < MIN_VIDEO_BITRATE_KBPS * 4) {
-            factor = 1.5;
-        } else {
-            factor = 1.15;
-        }
+        factor = 1.05;
     } else if (lossClear || delayClear) {
-        // One signal clear, other neutral: moderate increase
-        if (videoBitrate < MIN_VIDEO_BITRATE_KBPS * 4) {
-            factor = 1.25;
-        } else {
-            factor = 1.08;
-        }
+        factor = 1.02;
     }
-    // else: both neutral -> hold (factor = 1.0)
 
     videoBitrate = (UINT64) MAX(MIN(videoBitrate * factor, MAX_VIDEO_BITRATE_KBPS), MIN_VIDEO_BITRATE_KBPS);
     audioBitrate = (UINT64) MAX(MIN(audioBitrate * factor, MAX_AUDIO_BITRATE_BPS), MIN_AUDIO_BITRATE_BPS);
 
-    // Pause media when at the floor to let congestion clear; resume once recovering
     pSampleStreamingSession->twccMetadata.mediaPaused = (videoBitrate <= MIN_VIDEO_BITRATE_KBPS);
 
-    // Update the session with the new bitrate and adjustment time
     pSampleStreamingSession->twccMetadata.newVideoBitrate = videoBitrate;
     pSampleStreamingSession->twccMetadata.newAudioBitrate = audioBitrate;
     MUTEX_UNLOCK(pSampleStreamingSession->twccMetadata.updateLock);
@@ -756,6 +743,17 @@ VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, U
           delayClear);
     DLOGI("BWE result: video=%u kbps audio=%u bps | tx: %u bytes %u pkts, rx: %u bytes %u pkts, window: %lu ms", videoBitrate, audioBitrate,
           txBytes, txPacketsCnt, rxBytes, rxPacketsCnt, duration / 10000ULL);
+
+    if (!bweTargetHeaderWritten) {
+        PCHAR hdr = (PCHAR) "timestampMs,targetVideoBitrateKbps,delayTrendMs,pktLossPct,factor\n";
+        writeFile((PCHAR) "bwe_target.csv", FALSE, FALSE, (PBYTE) hdr, STRLEN(hdr));
+        bweTargetHeaderWritten = TRUE;
+    }
+    CHAR line[256];
+    UINT32 len = (UINT32) SNPRINTF(line, SIZEOF(line), "%.4f,%llu,%.4f,%.2f,%.2f\n",
+                                   (DOUBLE) currentTimeMs / HUNDREDS_OF_NANOS_IN_A_MILLISECOND, (UINT64) videoBitrate,
+                                   twccMetrics.delayTrendMs, pSampleStreamingSession->twccMetadata.averagePacketLoss, factor);
+    writeFile((PCHAR) "bwe_target.csv", FALSE, TRUE, (PBYTE) line, len);
 }
 
 STATUS handleRemoteCandidate(PSampleStreamingSession pSampleStreamingSession, PSignalingMessage pSignalingMessage)

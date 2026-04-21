@@ -542,6 +542,26 @@ STATUS onRtcpTwccPacket(PRtcpPacket pRtcpPacket, PKvsPeerConnection pKvsPeerConn
 
     updateTwccHashTable(pTwccManager, &duration, &receivedBytes, &receivedPackets, &sentBytes, &sentPackets);
 
+#ifdef TWCC_CSV_DUMP
+    {
+        static BOOL bweHeaderWritten = FALSE;
+        CHAR bweLine[256];
+        UINT32 bweLen;
+        if (!bweHeaderWritten) {
+            PCHAR bweHeader = (PCHAR) "timestampMs,sendBitrateKbps,recvBitrateKbps,sentPkts,recvPkts,delayTrendMs,queueDelayMs,durationMs\n";
+            writeFile((PCHAR) "bwe_dump.csv", FALSE, FALSE, (PBYTE) bweHeader, STRLEN(bweHeader));
+            bweHeaderWritten = TRUE;
+        }
+        DOUBLE durationMs = (duration > 0) ? (DOUBLE) duration / HUNDREDS_OF_NANOS_IN_A_MILLISECOND : 0.0;
+        DOUBLE sendBitrateKbps = (durationMs > 0) ? (DOUBLE) sentBytes * 8.0 / durationMs : 0.0;
+        DOUBLE recvBitrateKbps = (durationMs > 0) ? (DOUBLE) receivedBytes * 8.0 / durationMs : 0.0;
+        bweLen = (UINT32) SNPRINTF(bweLine, SIZEOF(bweLine), "%.4f,%.2f,%.2f,%llu,%llu,%.4f,%.4f,%.4f\n",
+                                   (DOUBLE) currentTimeKvs / HUNDREDS_OF_NANOS_IN_A_MILLISECOND, sendBitrateKbps, recvBitrateKbps,
+                                   (UINT64) sentPackets, (UINT64) receivedPackets, delayTrend, queueDelay, durationMs);
+        writeFile((PCHAR) "bwe_dump.csv", FALSE, TRUE, (PBYTE) bweLine, bweLen);
+    }
+#endif
+
     if (duration > 0) {
         MUTEX_UNLOCK(pKvsPeerConnection->twccLock);
         locked = FALSE;

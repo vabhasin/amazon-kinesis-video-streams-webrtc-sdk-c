@@ -139,8 +139,7 @@ GstFlowReturn on_new_sample(GstElement* sink, gpointer data, UINT64 trackid)
                 pSampleStreamingSession->audioTimestamp +=
                     SAMPLE_AUDIO_FRAME_DURATION; // assume audio frame size is 20ms, which is default in opusenc
             } else {
-                if (pSampleStreamingSession->pSampleConfiguration->enableTwcc && senderPipeline != NULL &&
-                    (frame.flags & FRAME_FLAG_KEY_FRAME)) {
+                if (pSampleStreamingSession->pSampleConfiguration->enableTwcc && senderPipeline != NULL) {
                     GstElement* encoder = gst_bin_get_by_name(GST_BIN(senderPipeline), "sampleVideoEncoder");
                     if (encoder != NULL) {
                         g_object_get(G_OBJECT(encoder), "bitrate", &bitrate, NULL);
@@ -158,11 +157,6 @@ GstFlowReturn on_new_sample(GstElement* sink, gpointer data, UINT64 trackid)
                 frame.presentationTs = pSampleStreamingSession->videoTimestamp;
                 frame.decodingTs = frame.presentationTs;
                 pSampleStreamingSession->videoTimestamp += SAMPLE_VIDEO_FRAME_DURATION; // assume video fps is 25
-            }
-            // Skip non-keyframes when media is paused to avoid clogging the network
-            // Keyframes are still sent so the decoder can resume immediately on recovery
-            if (pSampleStreamingSession->twccMetadata.mediaPaused && !(frame.flags & FRAME_FLAG_KEY_FRAME)) {
-                continue;
             }
             status = writeFrame(pRtcRtpTransceiver, &frame);
             if (status != STATUS_SRTP_NOT_READY_YET && status != STATUS_SUCCESS) {

@@ -64,12 +64,18 @@ PVOID sendVideoPacketsFromDisk(PVOID args)
     STATUS status;
     UINT32 i;
     UINT64 startTime, lastFrameTime, elapsed;
+    UINT64 frameDuration;
+    UINT64 targetBitrateKbps;
+    UINT64 lastFpsLogTime;
+    // Nominal bitrate of the static H264/H265 content (kbps)
+    UINT64 nominalBitrateKbps = 262;
     MEMSET(&encoderStats, 0x00, SIZEOF(RtcEncoderStats));
     CHK_ERR(pSampleConfiguration != NULL, STATUS_NULL_ARG, "[KVS Master] Streaming session is NULL");
 
     frame.presentationTs = 0;
     startTime = GETTIME();
     lastFrameTime = startTime;
+    lastFpsLogTime = startTime;
 
     while (!ATOMIC_LOAD_BOOL(&pSampleConfiguration->appTerminateFlag)) {
         if (pSampleConfiguration->videoCodec == RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_MODE) {
@@ -98,7 +104,32 @@ PVOID sendVideoPacketsFromDisk(PVOID args)
         encoderStats.width = 640;
         encoderStats.height = 480;
         encoderStats.targetBitrate = 262000;
-        frame.presentationTs += SAMPLE_VIDEO_FRAME_DURATION;
+
+        // When TWCC signals congestion, slow down sending by stretching the frame interval.
+        // Since static content has a fixed bitrate, sending slower effectively reduces the
+        // throughput to match the estimated available bandwidth.
+        frameDuration = SAMPLE_VIDEO_FRAME_DURATION;
+        if (pSampleConfiguration->enableTwcc && pSampleConfiguration->streamingSessionCount > 0) {
+            PSampleStreamingSession pSession = pSampleConfiguration->sampleStreamingSessionList[0];
+            MUTEX_LOCK(pSession->twccMetadata.updateLock);
+            targetBitrateKbps = pSession->twccMetadata.newVideoBitrate;
+            pSession->twccMetadata.currentVideoBitrate = targetBitrateKbps > 0 ? MIN(targetBitrateKbps, nominalBitrateKbps) : nominalBitrateKbps;
+            MUTEX_UNLOCK(pSession->twccMetadata.updateLock);
+            if (targetBitrateKbps > 0 && targetBitrateKbps < nominalBitrateKbps) {
+                // Don't slow below half the nominal rate (12.5 fps) to avoid unrecoverable stalls
+                UINT64 minBitrateKbps = nominalBitrateKbps / 2;
+                targetBitrateKbps = MAX(targetBitrateKbps, minBitrateKbps);
+                frameDuration = SAMPLE_VIDEO_FRAME_DURATION * nominalBitrateKbps / targetBitrateKbps;
+            }
+        }
+
+        if (GETTIME() - lastFpsLogTime >= HUNDREDS_OF_NANOS_IN_A_SECOND) {
+            DLOGI("[Static Video] target FPS: %.1f (frameDuration: %llu ms)", (DOUBLE) HUNDREDS_OF_NANOS_IN_A_SECOND / frameDuration,
+                  frameDuration / HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
+            lastFpsLogTime = GETTIME();
+        }
+
+        frame.presentationTs += frameDuration;
         MUTEX_LOCK(pSampleConfiguration->streamingSessionListReadLock);
         for (i = 0; i < pSampleConfiguration->streamingSessionCount; ++i) {
             status = writeFrame(pSampleConfiguration->sampleStreamingSessionList[i]->pVideoRtcRtpTransceiver, &frame);
@@ -124,7 +155,7 @@ PVOID sendVideoPacketsFromDisk(PVOID args)
         // Also, it's very unlikely to have a delay greater than SAMPLE_VIDEO_FRAME_DURATION, so the logic assumes that this is always
         // true for simplicity.
         elapsed = lastFrameTime - startTime;
-        THREAD_SLEEP(SAMPLE_VIDEO_FRAME_DURATION - elapsed % SAMPLE_VIDEO_FRAME_DURATION);
+        THREAD_SLEEP(frameDuration - elapsed % frameDuration);
         lastFrameTime = GETTIME();
     }
 
@@ -144,9 +175,15 @@ PVOID sendAudioPacketsFromDisk(PVOID args)
     CHAR filePath[MAX_PATH_LEN + 1];
     UINT32 i;
     STATUS status;
+    UINT64 frameDuration;
+    UINT64 targetAudioBitrate;
+    UINT64 lastFpsLogTime;
+    // Nominal bitrate of the static Opus content (bps)
+    UINT64 nominalAudioBitrateBps = DEFAULT_AUDIO_OPUS_BYTE_RATE;
 
     CHK_ERR(pSampleConfiguration != NULL, STATUS_NULL_ARG, "[KVS Master] Streaming session is NULL");
     frame.presentationTs = 0;
+    lastFpsLogTime = GETTIME();
 
     while (!ATOMIC_LOAD_BOOL(&pSampleConfiguration->appTerminateFlag)) {
         fileIndex = fileIndex % NUMBER_OF_OPUS_FRAME_FILES + 1;
@@ -169,7 +206,26 @@ PVOID sendAudioPacketsFromDisk(PVOID args)
 
         CHK_STATUS(readFrameFromDisk(frame.frameData, &frameSize, filePath));
 
-        frame.presentationTs += SAMPLE_AUDIO_FRAME_DURATION;
+        // Slow down audio sending when TWCC signals congestion
+        frameDuration = SAMPLE_AUDIO_FRAME_DURATION;
+        if (pSampleConfiguration->enableTwcc && pSampleConfiguration->streamingSessionCount > 0) {
+            PSampleStreamingSession pSession = pSampleConfiguration->sampleStreamingSessionList[0];
+            MUTEX_LOCK(pSession->twccMetadata.updateLock);
+            targetAudioBitrate = pSession->twccMetadata.newAudioBitrate;
+            pSession->twccMetadata.currentAudioBitrate = nominalAudioBitrateBps;
+            MUTEX_UNLOCK(pSession->twccMetadata.updateLock);
+            if (targetAudioBitrate > 0 && targetAudioBitrate < nominalAudioBitrateBps) {
+                frameDuration = SAMPLE_AUDIO_FRAME_DURATION * nominalAudioBitrateBps / targetAudioBitrate;
+            }
+        }
+
+        if (GETTIME() - lastFpsLogTime >= HUNDREDS_OF_NANOS_IN_A_SECOND) {
+            DLOGI("[Static Audio] target packet rate: %.1f pps (frameDuration: %llu ms)", (DOUBLE) HUNDREDS_OF_NANOS_IN_A_SECOND / frameDuration,
+                  frameDuration / HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
+            lastFpsLogTime = GETTIME();
+        }
+
+        frame.presentationTs += frameDuration;
 
         MUTEX_LOCK(pSampleConfiguration->streamingSessionListReadLock);
         for (i = 0; i < pSampleConfiguration->streamingSessionCount; ++i) {
@@ -187,7 +243,7 @@ PVOID sendAudioPacketsFromDisk(PVOID args)
             }
         }
         MUTEX_UNLOCK(pSampleConfiguration->streamingSessionListReadLock);
-        THREAD_SLEEP(SAMPLE_AUDIO_FRAME_DURATION);
+        THREAD_SLEEP(frameDuration);
     }
 
 CleanUp:
