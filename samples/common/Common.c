@@ -702,7 +702,7 @@ VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, U
     BOOL lossCongested = pSampleStreamingSession->twccMetadata.averagePacketLoss > 5.0;
     BOOL delayCongested = twccMetrics.delayTrendMs > 0.5;
     BOOL lossClear = pSampleStreamingSession->twccMetadata.averagePacketLoss <= 2.0;
-    BOOL delayClear = twccMetrics.delayTrendMs < -0.01;
+    BOOL delayClear = twccMetrics.delayTrendMs < -0.1;
 
     DOUBLE factor = 1.0;
     if (lossCongested || delayCongested) {
@@ -714,21 +714,29 @@ VOID sampleSenderBandwidthEstimationHandler(UINT64 customData, UINT32 txBytes, U
             lossFactor = 0.85;
         }
         if (twccMetrics.delayTrendMs > 5.0) {
-            delayFactor = 0.7;
+            delayFactor = 0.5;
         } else if (twccMetrics.delayTrendMs > 1.0) {
-            delayFactor = 0.85;
+            delayFactor = 0.7;
         } else if (delayCongested) {
             delayFactor = 0.95;
         }
         factor = MIN(lossFactor, delayFactor);
     } else if (lossClear && delayClear) {
-        factor = 1.05;
+        // Additive increase: fixed step relative to max, not current bitrate
+        videoBitrate = MIN(videoBitrate + MAX_VIDEO_BITRATE_KBPS / 50, MAX_VIDEO_BITRATE_KBPS);
+        factor = 0;
     } else if (lossClear || delayClear) {
-        factor = 1.02;
+        videoBitrate = MIN(videoBitrate + MAX_VIDEO_BITRATE_KBPS / 100, MAX_VIDEO_BITRATE_KBPS);
+        factor = 0;
     }
+    // else: both neutral -> hold (factor = 1.0, no change)
 
-    videoBitrate = (UINT64) MAX(MIN(videoBitrate * factor, MAX_VIDEO_BITRATE_KBPS), MIN_VIDEO_BITRATE_KBPS);
-    audioBitrate = (UINT64) MAX(MIN(audioBitrate * factor, MAX_AUDIO_BITRATE_BPS), MIN_AUDIO_BITRATE_BPS);
+    if (factor > 0) {
+        videoBitrate = (UINT64) MAX(MIN(videoBitrate * factor, MAX_VIDEO_BITRATE_KBPS), MIN_VIDEO_BITRATE_KBPS);
+    } else {
+        videoBitrate = (UINT64) MAX(videoBitrate, MIN_VIDEO_BITRATE_KBPS);
+    }
+    audioBitrate = (UINT64) MAX(MIN(audioBitrate * (factor > 0 ? factor : 1.0), MAX_AUDIO_BITRATE_BPS), MIN_AUDIO_BITRATE_BPS);
 
     pSampleStreamingSession->twccMetadata.mediaPaused = (videoBitrate <= MIN_VIDEO_BITRATE_KBPS);
 

@@ -255,7 +255,7 @@ PVOID sendGstreamerAudioVideo(PVOID args)
                             "queue ! videoconvert ! videoscale ! video/x-raw,width=1280,height=720 ! "
                             "clockoverlay halignment=right valignment=top time-format=\"%Y-%m-%d %H:%M:%S\" ! "
                             "videorate ! video/x-raw,framerate=25/1 ! "
-                            "x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=512 byte-stream=TRUE tune=zerolatency key-int-max=25 ! "
+                            "x264enc name=sampleVideoEncoder bframes=0 speed-preset=veryfast bitrate=512 byte-stream=TRUE tune=zerolatency key-int-max=25 ! "
                             "video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! "
                             "appsink sync=TRUE emit-signals=TRUE name=appsink-video",
                             &gError);
@@ -265,7 +265,7 @@ PVOID sendGstreamerAudioVideo(PVOID args)
                 case DEVICE_SOURCE: {
                     senderPipeline = gst_parse_launch(
                         "autovideosrc ! queue ! videoconvert ! video/x-raw,width=1280,height=720,framerate=25/1 ! "
-                        "x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=512 byte-stream=TRUE tune=zerolatency key-int-max=25 ! "
+                        "x264enc name=sampleVideoEncoder bframes=0 speed-preset=veryfast bitrate=512 byte-stream=TRUE tune=zerolatency key-int-max=25 ! "
                         "video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! "
                         "appsink sync=TRUE "
                         "emit-signals=TRUE name=appsink-video",
@@ -302,7 +302,7 @@ PVOID sendGstreamerAudioVideo(PVOID args)
                             "videotestsrc pattern=ball is-live=TRUE ! "
                             "queue ! videorate ! videoscale ! videoconvert ! video/x-raw,width=1280,height=720,framerate=25/1 ! "
                             "clockoverlay halignment=right valignment=top time-format=\"%Y-%m-%d %H:%M:%S\" ! "
-                            "x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=512 byte-stream=TRUE tune=zerolatency key-int-max=25 ! "
+                            "x264enc name=sampleVideoEncoder bframes=0 speed-preset=ultrafast bitrate=1024 byte-stream=TRUE tune=zerolatency key-int-max=25 ! "
                             "video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! "
                             "appsink sync=TRUE emit-signals=TRUE name=appsink-video audiotestsrc wave=ticks is-live=TRUE ! "
                             "queue leaky=2 max-size-buffers=400 ! audioconvert ! audioresample ! opusenc name=sampleAudioEncoder ! "

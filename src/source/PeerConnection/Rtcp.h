@@ -23,7 +23,7 @@ STATUS computeTwccTrendline(PTwccManager, PDOUBLE, PDOUBLE); // outputs: pDelayT
 #define TWCC_PACKET_LOST_TIME        ((UINT64) (-1LL))
 #define TWCC_PACKET_UNITIALIZED_TIME        0
 #define TWCC_ESTIMATOR_TIME_WINDOW          (10 * HUNDREDS_OF_NANOS_IN_A_SECOND)
-#define TWCC_TRENDLINE_SMOOTHING_FACTOR     0.1
+#define TWCC_TRENDLINE_SMOOTHING_FACTOR     0.2
 #define TWCC_TRENDLINE_INCREASE_THRESHOLD   (-0.005)  // TODO: tune — delayTrend (ms) below this means network buffers are draining
 #define TWCC_TRENDLINE_DECREASE_THRESHOLD   (0.005)   // TODO: tune — delayTrend (ms) above this means network buffers are filling
 #define TWCC_ADJUSTMENT_INTERVAL            (3 * HUNDREDS_OF_NANOS_IN_A_SECOND) // How often to log/act on bitrate decisions
