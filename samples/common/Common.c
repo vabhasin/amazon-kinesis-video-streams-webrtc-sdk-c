@@ -1150,6 +1150,9 @@ STATUS pregenerateCertTimerCallback(UINT32 timerId, UINT64 currentTime, UINT64 c
         locked = TRUE;
     }
 
+    // Don't pre-generate certs when there are active streaming sessions to avoid impacting existing connections
+    CHK(pSampleConfiguration->streamingSessionCount == 0, retStatus);
+
     // Quick check if there is anything that needs to be done.
     CHK_STATUS(stackQueueGetCount(pSampleConfiguration->pregeneratedCertificates, &certCount));
     CHK(certCount != MAX_RTCCONFIGURATION_CERTIFICATES, retStatus);
