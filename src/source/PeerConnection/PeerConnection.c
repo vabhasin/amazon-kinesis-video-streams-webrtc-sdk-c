@@ -1419,8 +1419,18 @@ STATUS setRemoteDescription(PRtcPeerConnection pPeerConnection, PRtcSessionDescr
             // are silently skipped — RFC 8122 §5 permits multiple lines and selecting one of them.
             if (STRNCMP(pSessionDescription->sdpAttributes[i].attributeValue, DTLS_FINGERPRINT_SHA256_PREFIX, DTLS_FINGERPRINT_SHA256_PREFIX_LEN) ==
                 0) {
+                DLOGV("Found SHA-256 session-level fingerprint");
                 STRNCPY(pKvsPeerConnection->remoteCertificateFingerprint,
                         pSessionDescription->sdpAttributes[i].attributeValue + DTLS_FINGERPRINT_SHA256_PREFIX_LEN, CERTIFICATE_FINGERPRINT_LENGTH);
+            } else {
+                // Log just the algorithm name (everything up to the first space) — the hex hash that follows
+                // is long and adds nothing to the diagnostic. Drop this `else` branch once the SDK supports
+                // the other hash algorithms.
+                PCHAR space = STRCHR(pSessionDescription->sdpAttributes[i].attributeValue, ' ');
+                INT32 algoLen = (space != NULL) ? (INT32) (space - pSessionDescription->sdpAttributes[i].attributeValue)
+                                                : (INT32) STRLEN(pSessionDescription->sdpAttributes[i].attributeValue);
+                DLOGV("Ignoring unsupported session-level fingerprint algorithm: %.*s", algoLen,
+                      pSessionDescription->sdpAttributes[i].attributeValue);
             }
         } else if (pKvsPeerConnection->isOffer && STRCMP(pSessionDescription->sdpAttributes[i].attributeName, "setup") == 0) {
             // possible values are actpass, passive and active. If the incoming SDP has active, it indicates it is taking up a client role
@@ -1454,9 +1464,17 @@ STATUS setRemoteDescription(PRtcPeerConnection pPeerConnection, PRtcSessionDescr
                 // Only sha-256 — see the matching session-level fingerprint loop above for the rationale.
                 if (STRNCMP(pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeValue, DTLS_FINGERPRINT_SHA256_PREFIX,
                             DTLS_FINGERPRINT_SHA256_PREFIX_LEN) == 0) {
+                    DLOGV("Found SHA-256 media-level fingerprint");
                     STRNCPY(pKvsPeerConnection->remoteCertificateFingerprint,
                             pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeValue + DTLS_FINGERPRINT_SHA256_PREFIX_LEN,
                             CERTIFICATE_FINGERPRINT_LENGTH);
+                } else {
+                    // Drop this `else` branch once the SDK supports the other hash algorithms.
+                    PCHAR space = STRCHR(pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeValue, ' ');
+                    INT32 algoLen = (space != NULL) ? (INT32) (space - pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeValue)
+                                                    : (INT32) STRLEN(pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeValue);
+                    DLOGV("Ignoring unsupported media-level fingerprint algorithm: %.*s", algoLen,
+                          pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeValue);
                 }
             } else if (pKvsPeerConnection->isOffer &&
                        STRCMP(pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeName, "setup") == 0) {

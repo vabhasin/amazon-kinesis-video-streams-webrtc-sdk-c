@@ -3331,6 +3331,59 @@ a=rtpmap:96 VP8/90000
                     [](PCHAR sdp) { runSetRemoteDescriptionAndAssertSha256Picked(sdp, (PCHAR) sha256FingerprintHex); });
 }
 
+// If the peer advertises only non-sha256 fingerprints (sha-384/sha-512), the
+// filter must reject all of them and `setRemoteDescription` must fail with
+// `STATUS_SESSION_DESCRIPTION_MISSING_CERTIFICATE_FINGERPRINT` rather than
+// silently storing an empty fingerprint string and deferring the failure to
+// the DTLS handshake. This guards against the inverse of the sha-256 selection
+// bug — a regression that, say, defaults to the last seen line on no-match.
+static void runSetRemoteDescriptionAndAssertMissingFingerprint(PCHAR sdp)
+{
+    PRtcPeerConnection pRtcPeerConnection = NULL;
+    RtcConfiguration rtcConfiguration;
+    RtcSessionDescriptionInit rtcSessionDescriptionInit;
+
+    MEMSET(&rtcConfiguration, 0x00, SIZEOF(RtcConfiguration));
+    MEMSET(&rtcSessionDescriptionInit, 0x00, SIZEOF(RtcSessionDescriptionInit));
+
+    EXPECT_EQ(createPeerConnection(&rtcConfiguration, &pRtcPeerConnection), STATUS_SUCCESS);
+
+    STRCPY(rtcSessionDescriptionInit.sdp, sdp);
+    rtcSessionDescriptionInit.type = SDP_TYPE_OFFER;
+    EXPECT_EQ(setRemoteDescription(pRtcPeerConnection, &rtcSessionDescriptionInit),
+              STATUS_SESSION_DESCRIPTION_MISSING_CERTIFICATE_FINGERPRINT);
+
+    closePeerConnection(pRtcPeerConnection);
+    freePeerConnection(&pRtcPeerConnection);
+}
+
+TEST_F(SdpApiTest, setRemoteDescription_FailsWhenNoSha256FingerprintProvided)
+{
+    auto offer = std::string(R"(v=0
+o=- 7732543171158289043 1565379274 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 1
+a=msid-semantic: WMS
+m=video 16485 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 205.251.233.176
+a=rtcp:9 IN IP4 0.0.0.0
+a=ice-ufrag:9YRc
+a=ice-pwd:/ELMEiczRSsx2OEi2ynq+TbZ
+a=ice-options:trickle
+)") + sha384FingerprintLine + "\n" + sha512FingerprintLine + R"(
+a=setup:actpass
+a=mid:1
+a=recvonly
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:96 VP8/90000
+)";
+
+    assertLFAndCRLF((PCHAR) offer.c_str(), offer.size(),
+                    [](PCHAR sdp) { runSetRemoteDescriptionAndAssertMissingFingerprint(sdp); });
+}
+
 } // namespace webrtcclient
 } // namespace video
 } // namespace kinesis
