@@ -1825,6 +1825,11 @@ PVOID reconnectHandler(PVOID args)
     // thread but there is a slight chance of a race condition.
     CHK(!ATOMIC_LOAD_BOOL(&pSignalingClient->shutdown), retStatus);
 
+    // Recreate LWS context to prevent pipe FD leak during credential/TURN rotation.
+    // LWS internal cancel-service pipe read-ends are never closed when virtual hosts
+    // are torn down and recreated within the same context, leaking 1 FD per reconnect.
+    CHK_STATUS(recreateLwsContext(pSignalingClient));
+
     // Update the diagnostics info
     ATOMIC_INCREMENT(&pSignalingClient->diagnostics.numberOfReconnects);
 

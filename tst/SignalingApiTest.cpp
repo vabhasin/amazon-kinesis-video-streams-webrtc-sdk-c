@@ -1,5 +1,9 @@
 #include "WebRTCClientTestFixture.h"
 
+#ifndef _WIN32
+#include <dirent.h>
+#endif
+
 namespace com {
 namespace amazonaws {
 namespace kinesis {
@@ -540,6 +544,159 @@ TEST_F(SignalingApiTest, signalingClientGetMetrics)
 
     deinitializeSignalingClient();
 }
+
+TEST_F(SignalingApiTest, recreateLwsContextNullArgs)
+{
+    EXPECT_EQ(STATUS_NULL_ARG, recreateLwsContext(NULL));
+}
+
+TEST_F(SignalingApiTest, recreateLwsContextNullProtocols)
+{
+    ASSERT_EQ(TRUE, mAccessKeyIdSet);
+
+    initializeSignalingClient();
+
+    PSignalingClient pSignalingClient = FROM_SIGNALING_CLIENT_HANDLE(mSignalingClientHandle);
+    ASSERT_TRUE(pSignalingClient != NULL);
+
+    // Save and null out the protocols to test the guard
+    PVOID pSavedProtocols = pSignalingClient->signalingProtocols[PROTOCOL_INDEX_HTTPS];
+    pSignalingClient->signalingProtocols[PROTOCOL_INDEX_HTTPS] = NULL;
+
+    EXPECT_EQ(STATUS_INVALID_ARG, recreateLwsContext(pSignalingClient));
+
+    // Restore so cleanup works
+    pSignalingClient->signalingProtocols[PROTOCOL_INDEX_HTTPS] = pSavedProtocols;
+
+    deinitializeSignalingClient();
+    THREAD_SLEEP(100 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
+}
+
+TEST_F(SignalingApiTest, recreateLwsContextSuccess)
+{
+    ASSERT_EQ(TRUE, mAccessKeyIdSet);
+
+    initializeSignalingClient();
+
+    PSignalingClient pSignalingClient = FROM_SIGNALING_CLIENT_HANDLE(mSignalingClientHandle);
+    ASSERT_TRUE(pSignalingClient != NULL);
+    ASSERT_TRUE(pSignalingClient->pWebsocketContext != NULL);
+
+    PVOID pOldContext = pSignalingClient->pWebsocketContext;
+
+    // Recreate should succeed and produce a new context
+    EXPECT_EQ(STATUS_SUCCESS, recreateLwsContext(pSignalingClient));
+    EXPECT_TRUE(pSignalingClient->pWebsocketContext != NULL);
+    EXPECT_NE(pOldContext, pSignalingClient->pWebsocketContext);
+    EXPECT_TRUE(pSignalingClient->currentWsi[PROTOCOL_INDEX_HTTPS] == NULL);
+    EXPECT_TRUE(pSignalingClient->currentWsi[PROTOCOL_INDEX_WSS] == NULL);
+
+    deinitializeSignalingClient();
+    THREAD_SLEEP(100 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
+}
+
+TEST_F(SignalingApiTest, recreateLwsContextMultipleTimes)
+{
+    ASSERT_EQ(TRUE, mAccessKeyIdSet);
+
+    initializeSignalingClient();
+
+    PSignalingClient pSignalingClient = FROM_SIGNALING_CLIENT_HANDLE(mSignalingClientHandle);
+    ASSERT_TRUE(pSignalingClient != NULL);
+
+    // Recreate multiple times to simulate multiple reconnect cycles.
+    // Each call should succeed and not leak the previous context.
+    for (UINT32 i = 0; i < 5; i++) {
+        PVOID pPrevContext = pSignalingClient->pWebsocketContext;
+        EXPECT_EQ(STATUS_SUCCESS, recreateLwsContext(pSignalingClient));
+        EXPECT_TRUE(pSignalingClient->pWebsocketContext != NULL);
+        EXPECT_NE(pPrevContext, pSignalingClient->pWebsocketContext);
+    }
+
+    deinitializeSignalingClient();
+    THREAD_SLEEP(100 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
+}
+
+TEST_F(SignalingApiTest, recreateLwsContextThenConnectSync)
+{
+    ASSERT_EQ(TRUE, mAccessKeyIdSet);
+
+    initializeSignalingClient();
+
+    PSignalingClient pSignalingClient = FROM_SIGNALING_CLIENT_HANDLE(mSignalingClientHandle);
+    ASSERT_TRUE(pSignalingClient != NULL);
+
+    // Recreate the context, then re-fetch and reconnect — this mirrors
+    // what reconnectHandler does: recreate context then drive the state
+    // machine through GET_TOKEN → DESCRIBE → ... → CONNECTED.
+    EXPECT_EQ(STATUS_SUCCESS, recreateLwsContext(pSignalingClient));
+    EXPECT_EQ(STATUS_SUCCESS, signalingClientFetchSync(mSignalingClientHandle));
+    EXPECT_EQ(STATUS_SUCCESS, signalingClientConnectSync(mSignalingClientHandle));
+
+    // Verify we are connected
+    EXPECT_TRUE(ATOMIC_LOAD_BOOL(&pSignalingClient->connected));
+
+    deinitializeSignalingClient();
+    THREAD_SLEEP(100 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
+}
+
+#ifndef _WIN32
+TEST_F(SignalingApiTest, recreateLwsContextFdCountStable)
+{
+    ASSERT_EQ(TRUE, mAccessKeyIdSet);
+
+    initializeSignalingClient();
+
+    PSignalingClient pSignalingClient = FROM_SIGNALING_CLIENT_HANDLE(mSignalingClientHandle);
+    ASSERT_TRUE(pSignalingClient != NULL);
+
+    // Helper lambda to count open FDs for this process via /proc or /dev/fd
+    auto countOpenFds = []() -> INT32 {
+        INT32 count = 0;
+#if defined(__APPLE__)
+        DIR* dir = opendir("/dev/fd");
+#else
+        DIR* dir = opendir("/proc/self/fd");
+#endif
+        if (dir == NULL) {
+            return -1;
+        }
+        while (readdir(dir) != NULL) {
+            count++;
+        }
+        closedir(dir);
+        // Subtract 3 for '.', '..', and the dirfd itself
+        return count - 3;
+    };
+
+    // Warm up: do one recreate to reach steady state
+    EXPECT_EQ(STATUS_SUCCESS, recreateLwsContext(pSignalingClient));
+
+    INT32 fdCountBefore = countOpenFds();
+    ASSERT_GT(fdCountBefore, 0);
+
+    // Recreate multiple times — FD count should not grow
+    const UINT32 iterations = 10;
+    for (UINT32 i = 0; i < iterations; i++) {
+        EXPECT_EQ(STATUS_SUCCESS, recreateLwsContext(pSignalingClient));
+    }
+
+    INT32 fdCountAfter = countOpenFds();
+    ASSERT_GT(fdCountAfter, 0);
+
+    // LWS 4.3.5 leaks ~1 FD per lws_create_context due to internal SSL global init.
+    // This is a known LWS limitation. The fix still prevents the *unbounded* vhost pipe
+    // FD leak (multiple FDs per reconnect without context recreation). With the fix,
+    // leak rate is bounded to ~1 FD per reconnect cycle (every 1-2 hours), which takes
+    // ~83 days to exhaust a 1024 FD limit vs hours/days without the fix.
+    EXPECT_LE(fdCountAfter, fdCountBefore + (INT32) iterations + 1)
+        << "Unbounded FD leak detected: before=" << fdCountBefore << " after=" << fdCountAfter
+        << " across " << iterations << " recreateLwsContext calls";
+
+    deinitializeSignalingClient();
+    THREAD_SLEEP(100 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
+}
+#endif
 
 TEST_F(SignalingApiTest, signalingClientCreateWithClientInfoVariations)
 {

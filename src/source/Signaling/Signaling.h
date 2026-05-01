@@ -406,6 +406,8 @@ STATUS validateSignalingCallbacks(PSignalingClient, PSignalingClientCallbacks);
 STATUS validateSignalingClientInfo(PSignalingClient, PSignalingClientInfoInternal);
 STATUS validateIceConfiguration(PSignalingClient);
 
+STATUS recreateLwsContext(PSignalingClient);
+
 STATUS signalingStoreOngoingMessage(PSignalingClient, PSignalingMessage);
 STATUS signalingRemoveOngoingMessage(PSignalingClient, PCHAR);
 STATUS signalingGetOngoingMessage(PSignalingClient, PCHAR, PCHAR, PSignalingMessage*);

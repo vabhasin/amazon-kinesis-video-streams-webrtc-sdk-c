@@ -157,6 +157,8 @@ STATUS createSignalingSync(PSignalingClientInfoInternal pClientInfo, PChannelInf
     creationInfo.port = CONTEXT_PORT_NO_LISTEN;
     creationInfo.protocols = pProtocols;
     creationInfo.timeout_secs = SIGNALING_SERVICE_API_CALL_TIMEOUT_IN_SECONDS;
+    //creationInfo.count_threads = 1;
+    //creationInfo.fd_limit_per_thread = 16;
     creationInfo.gid = -1;
     creationInfo.uid = -1;
     CHK_STATUS(readCACertificate(pChannelInfo->pCertPath, &caCertBuf, &caCertBufLen));
@@ -361,6 +363,82 @@ STATUS freeSignaling(PSignalingClient* ppSignalingClient)
     *ppSignalingClient = NULL;
 
 CleanUp:
+
+    LEAVES();
+    return retStatus;
+}
+
+STATUS recreateLwsContext(PSignalingClient pSignalingClient)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    PBYTE caCertBuf = NULL;
+    UINT32 caCertBufLen = 0;
+    struct lws_context_creation_info creationInfo;
+    const lws_retry_bo_t retryPolicy = {
+        .secs_since_valid_ping = SIGNALING_SERVICE_WSS_PING_PONG_INTERVAL_IN_SECONDS,
+        .secs_since_valid_hangup = SIGNALING_SERVICE_WSS_HANGUP_IN_SECONDS,
+    };
+    struct lws_protocols* pProtocols = NULL;
+    BOOL serviceLocked = FALSE, serializerLocked = FALSE;
+
+    CHK(pSignalingClient != NULL, STATUS_NULL_ARG);
+    CHK(pSignalingClient->signalingProtocols[PROTOCOL_INDEX_HTTPS] != NULL, STATUS_INVALID_ARG);
+
+    // Acquire both locks to prevent any concurrent lwsCompleteSync calls.
+    // Order: serializerLock first, then serviceLock — consistent with lwsCompleteSync.
+    MUTEX_LOCK(pSignalingClient->lwsSerializerLock);
+    serializerLocked = TRUE;
+
+    MUTEX_LOCK(pSignalingClient->lwsServiceLock);
+    serviceLocked = TRUE;
+
+    if (pSignalingClient->pWebsocketContext != NULL) {
+        lws_context_destroy((struct lws_context*) pSignalingClient->pWebsocketContext);
+        pSignalingClient->pWebsocketContext = NULL;
+    }
+
+    pProtocols = (struct lws_protocols*) pSignalingClient->signalingProtocols[PROTOCOL_INDEX_HTTPS];
+
+    // Mirror the exact creation info from createSignalingSync
+    MEMSET(&creationInfo, 0x00, SIZEOF(struct lws_context_creation_info));
+    creationInfo.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+    creationInfo.port = CONTEXT_PORT_NO_LISTEN;
+    creationInfo.protocols = pProtocols;
+    creationInfo.timeout_secs = SIGNALING_SERVICE_API_CALL_TIMEOUT_IN_SECONDS;
+    creationInfo.count_threads = 1;
+    creationInfo.fd_limit_per_thread = 16;
+    creationInfo.gid = -1;
+    creationInfo.uid = -1;
+    CHK_STATUS(readCACertificate(pSignalingClient->pChannelInfo->pCertPath, &caCertBuf, &caCertBufLen));
+    creationInfo.client_ssl_ca_mem = caCertBuf;
+    creationInfo.client_ssl_ca_mem_len = caCertBufLen;
+    creationInfo.client_ssl_cipher_list = "HIGH:!PSK:!RSP:!eNULL:!aNULL:!RC4:!MD5:!DES:!3DES:!aDH:!kDH:!DSS";
+    creationInfo.ka_time = SIGNALING_SERVICE_TCP_KEEPALIVE_IN_SECONDS;
+    creationInfo.ka_probes = SIGNALING_SERVICE_TCP_KEEPALIVE_PROBE_COUNT;
+    creationInfo.ka_interval = SIGNALING_SERVICE_TCP_KEEPALIVE_PROBE_INTERVAL_IN_SECONDS;
+    creationInfo.retry_and_idle_policy = &retryPolicy;
+
+    pSignalingClient->pWebsocketContext = lws_create_context(&creationInfo);
+    CHK(pSignalingClient->pWebsocketContext != NULL, STATUS_SIGNALING_LWS_CREATE_CONTEXT_FAILED);
+
+    pSignalingClient->currentWsi[PROTOCOL_INDEX_HTTPS] = NULL;
+    pSignalingClient->currentWsi[PROTOCOL_INDEX_WSS] = NULL;
+
+    DLOGI("Recreated LWS context to release leaked pipe FDs");
+
+CleanUp:
+    SAFE_MEMFREE(caCertBuf);
+
+    if (serviceLocked) {
+        MUTEX_UNLOCK(pSignalingClient->lwsServiceLock);
+    }
+
+    if (serializerLocked) {
+        MUTEX_UNLOCK(pSignalingClient->lwsSerializerLock);
+    }
+
+    CHK_LOG_ERR(retStatus);
 
     LEAVES();
     return retStatus;

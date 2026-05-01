@@ -309,14 +309,17 @@ else()
 endif()
 
 if (OPEN_SRC_INSTALL_PREFIX)
-  find_library(SRTP_LIBRARIES srtp2 REQUIRED PATHS ${OPEN_SRC_INSTALL_PREFIX})
+  pkg_check_modules(LIBSRTP REQUIRED libsrtp2)
+
+  find_library(SRTP_LIBRARIES srtp2 REQUIRED PATHS ${OPEN_SRC_INSTALL_PREFIX}/lib)
 
   if (LINK_PROFILER)
     find_library(GPERFTOOLS_MALLOC_LIBRARIES tcmalloc REQUIRED PATHS ${OPEN_SRC_INSTALL_PREFIX})
     find_library(GPERFTOOLS_PROFILER_LIBRARIES profiler REQUIRED PATHS ${OPEN_SRC_INSTALL_PREFIX})
   endif()
 else()
-  find_library(SRTP_LIBRARIES srtp2 REQUIRED )
+  pkg_check_modules(LIBSRTP REQUIRED libsrtp2)
+  set(SRTP_LIBRARIES ${LIBSRTP_LIBRARIES})
   if (LINK_PROFILER)
     find_library(GPERFTOOLS_MALLOC_LIBRARIES tcmalloc REQUIRED)
     find_library(GPERFTOOLS_PROFILER_LIBRARIES profiler REQUIRED)
@@ -329,14 +332,30 @@ else()
   pkg_check_modules(LIBWEBSOCKETS REQUIRED libwebsockets)
 endif()
 
-# usrsctp dont support pkgconfig yet
-find_library(
-  Usrsctp
-  NAMES ${USRSCTP_LIBNAME} usrsctp REQUIRED
-  PATHS ${OPEN_SRC_INSTALL_PREFIX}/lib ${OPEN_SRC_INSTALL_PREFIX}/lib64)
+if (OPEN_SRC_INSTALL_PREFIX)
+  pkg_check_modules(LIBUSRSCTP REQUIRED usrsctp)
+
+  find_library(
+    Usrsctp
+    NAMES ${USRSCTP_LIBNAME} usrsctp REQUIRED
+    PATHS ${OPEN_SRC_INSTALL_PREFIX}/lib ${OPEN_SRC_INSTALL_PREFIX}/lib64)
+else()
+  pkg_check_modules(LIBUSRSCTP REQUIRED usrsctp)
+  set(Usrsctp ${LIBUSRSCTP_LIBRARIES})
+endif()
+
+# Homebrew usrsctp .pc sets includedir to .../include/usrsctp but the
+# header is at .../include/usrsctp.h. Compute the parent as a workaround.
+set(USRSCTP_FIXED_INCLUDE_DIRS)
+foreach(_dir ${LIBUSRSCTP_INCLUDE_DIRS})
+  list(APPEND USRSCTP_FIXED_INCLUDE_DIRS ${_dir})
+  get_filename_component(_parent ${_dir} DIRECTORY)
+  list(APPEND USRSCTP_FIXED_INCLUDE_DIRS ${_parent})
+endforeach()
 
 set(OPEN_SRC_INCLUDE_DIRS ${OPEN_SRC_INCLUDE_DIRS} ${LIBSRTP_INCLUDE_DIRS}
-                          ${CURL_INCLUDE_DIRS} ${LIBWEBSOCKETS_INCLUDE_DIRS})
+                          ${CURL_INCLUDE_DIRS} ${LIBWEBSOCKETS_INCLUDE_DIRS}
+                          ${USRSCTP_FIXED_INCLUDE_DIRS})
 
 link_directories(${LIBSRTP_LIBRARY_DIRS})
 link_directories(${LIBWEBSOCKETS_LIBRARY_DIRS})
