@@ -414,6 +414,21 @@ TEST_F(RtpFunctionalityTest, packingUnpackingVerifySameOpusFrame)
     MEMFREE(depayload);
 }
 
+TEST_F(RtpFunctionalityTest, packingEmptyOpusFrameReturnsZeroSubLenSize)
+{
+    BYTE payload[] = {0x00};
+    PayloadArray payloadArray;
+
+    payloadArray.payloadLength = 0;
+    payloadArray.payloadSubLenSize = 0;
+
+    EXPECT_EQ(STATUS_SUCCESS,
+              createPayloadForOpus(DEFAULT_MTU_SIZE_BYTES, (PBYTE) &payload, 0, NULL, &payloadArray.payloadLength, NULL,
+                                   &payloadArray.payloadSubLenSize));
+    EXPECT_EQ(0, payloadArray.payloadLength);
+    EXPECT_EQ(0, payloadArray.payloadSubLenSize);
+}
+
 TEST_F(RtpFunctionalityTest, packingUnpackingVerifySameShortG711Frame)
 {
     BYTE payload[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05};
