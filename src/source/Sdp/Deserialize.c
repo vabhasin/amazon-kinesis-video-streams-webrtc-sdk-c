@@ -29,7 +29,7 @@ STATUS parseSessionAttributes(PSessionDescription pSessionDescription, PCHAR pch
                 MIN(MAX_SDP_ATTRIBUTE_NAME_LENGTH, lineLen - SDP_ATTRIBUTE_LENGTH));
     } else {
         STRNCPY(pSessionDescription->sdpAttributes[pSessionDescription->sessionAttributesCount].attributeName, pch + SDP_ATTRIBUTE_LENGTH,
-                (search - (pch + SDP_ATTRIBUTE_LENGTH)));
+                MIN(MAX_SDP_ATTRIBUTE_NAME_LENGTH, (search - (pch + SDP_ATTRIBUTE_LENGTH))));
         STRNCPY(pSessionDescription->sdpAttributes[pSessionDescription->sessionAttributesCount].attributeValue, search + 1,
                 MIN(MAX_SDP_ATTRIBUTE_VALUE_LENGTH, lineLen - (search - pch + 1)));
     }
@@ -58,7 +58,7 @@ STATUS parseMediaAttributes(PSessionDescription pSessionDescription, PCHAR pch, 
                 pch + SDP_ATTRIBUTE_LENGTH, MIN(MAX_SDP_ATTRIBUTE_NAME_LENGTH, lineLen - SDP_ATTRIBUTE_LENGTH));
     } else {
         STRNCPY(pSessionDescription->mediaDescriptions[pSessionDescription->mediaCount - 1].sdpAttributes[currentMediaAttributesCount].attributeName,
-                pch + SDP_ATTRIBUTE_LENGTH, (search - (pch + SDP_ATTRIBUTE_LENGTH)));
+                pch + SDP_ATTRIBUTE_LENGTH, MIN(MAX_SDP_ATTRIBUTE_NAME_LENGTH, (search - (pch + SDP_ATTRIBUTE_LENGTH))));
         STRNCPY(pSessionDescription->mediaDescriptions[pSessionDescription->mediaCount - 1].sdpAttributes[currentMediaAttributesCount].attributeValue,
                 search + 1, MIN(MAX_SDP_ATTRIBUTE_VALUE_LENGTH, lineLen - (search - pch + 1)));
     }
