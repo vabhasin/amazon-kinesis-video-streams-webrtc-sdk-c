@@ -206,9 +206,9 @@ PVOID sendGstreamerAudioVideo(PVOID args)
                 }
                 case DEVICE_SOURCE: {
                     senderPipeline = gst_parse_launch(
-                        "autovideosrc ! queue ! videoconvert ! video/x-raw,width=1280,height=720,framerate=25/1 ! "
-                        "x264enc name=sampleVideoEncoder bframes=0 speed-preset=veryfast bitrate=512 byte-stream=TRUE tune=zerolatency ! "
-                        "video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! "
+                        "autovideosrc ! queue ! videoconvert ! videoscale ! video/x-raw,width=1280,height=720,framerate=25/1 ! "
+                        "x264enc name=sampleVideoEncoder bframes=0 speed-preset=veryfast bitrate=512 byte-stream=TRUE tune=zerolatency key-int-max=50 ! "
+                        "video/x-h264,stream-format=byte-stream,alignment=au ! "
                         " appsink sync=TRUE "
                         "emit-signals=TRUE name=appsink-video",
                         &gError);
@@ -266,8 +266,8 @@ PVOID sendGstreamerAudioVideo(PVOID args)
                 }
                 case DEVICE_SOURCE: {
                     senderPipeline = gst_parse_launch(
-                        "autovideosrc ! queue ! videoconvert ! video/x-raw,width=1280,height=720,framerate=25/1 ! "
-                        "x264enc name=sampleVideoEncoder bframes=0 speed-preset=veryfast bitrate=512 byte-stream=TRUE tune=zerolatency ! "
+                        "autovideosrc ! queue ! videoconvert ! videoscale ! video/x-raw,width=1280,height=720,framerate=25/1 ! "
+                        "x264enc name=sampleVideoEncoder bframes=0 speed-preset=veryfast bitrate=512 byte-stream=TRUE tune=zerolatency key-int-max=50 ! "
                         "video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! appsink sync=TRUE emit-signals=TRUE "
                         "name=appsink-video autoaudiosrc ! "
                         "queue leaky=2 max-size-buffers=400 ! audioconvert ! audioresample ! opusenc name=sampleAudioEncoder ! "
