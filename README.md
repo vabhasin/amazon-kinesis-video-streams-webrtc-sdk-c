@@ -394,6 +394,23 @@ gst-launch-1.0 videotestsrc pattern=ball num-buffers=1500 ! timeoverlay ! videoc
 gst-launch-1.0 audiotestsrc num-buffers=618 wave=sine volume=0.4 ! audioconvert ! audioresample ! opusenc ! audio/x-opus,rate=48000,channels=2 ! multifilesink location="sample-%03d.opus" index=1
 ```
 
+#### Troubleshoot issues running samples
+If you are using RPi with a camera module and encounter the following issue when running the provided `kvsWebrtcClientMasterGstSample` with `devicesrc` argument
+```
+ERROR   sendGstreamerAudioVideo(): [KVS GStreamer Master] Received error from GStreamer: Failed to allocate required memory.
+```
+
+It means gstreamer pipeline is using `v4l2src` while auto-detecting elements to use for video source, but it should use `libcamerasrc` instead.
+
+Resolution:
+
+Make sure that `libcamera` gstreamer plugin is installed and being used as the source element, rather than `v4l2src`. Type the following to install the libcamerasrc GStreamer plugin:
+
+```
+sudo apt-get update
+sudo apt-get install gstreamer1.0-libcamera
+```
+Once libcamera plugin is installed the `autovideosrc` element should automatically switch to use the correct source `libcamerasrc`
 
 ### Viewing Master Samples
 
