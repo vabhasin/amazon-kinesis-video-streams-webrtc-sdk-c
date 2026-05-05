@@ -2948,6 +2948,51 @@ TEST_F(SdpApiTest, addTransceiverUnknownCodecId_returnsStatusNotImplemented)
     freePeerConnection(&offerPc);
 }
 
+// Attribute name and value on colon path must be truncated to their max lengths
+TEST_F(SdpApiTest, deserializeSessionDescription_AttributeKeyValuesTruncated)
+{
+    // Try constructing 1 longer than max
+    std::string longName(MAX_SDP_ATTRIBUTE_NAME_LENGTH + 1, 'A');
+    std::string longValue(MAX_SDP_ATTRIBUTE_VALUE_LENGTH + 1, 'V');
+
+    std::string sessionSdp = "v=0\n"
+                             "o=- 1 1 IN IP4 127.0.0.1\n"
+                             "s=test\n"
+                             "t=0 0\n"
+                             "a=" + longName + ":" + longValue + "\n";
+    std::string mediaSdp =
+        "v=0\n"
+        "o=- 1 1 IN IP4 127.0.0.1\n"
+        "s=test\n"
+        "t=0 0\n"
+        "m=video 9 UDP/TLS/RTP/SAVPF 96\n"
+        "a=" + longName + ":" + longValue + "\n";
+
+    assertLFAndCRLF((PCHAR) sessionSdp.c_str(), (INT32) sessionSdp.size(), [&](PCHAR sdp) {
+        SessionDescription sessionDescription;
+        MEMSET(&sessionDescription, 0x00, SIZEOF(SessionDescription));
+        EXPECT_EQ(deserializeSessionDescription(&sessionDescription, sdp), STATUS_SUCCESS);
+        EXPECT_EQ(sessionDescription.sessionAttributesCount, 1);
+        EXPECT_EQ(STRLEN(sessionDescription.sdpAttributes[0].attributeName), MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+        EXPECT_EQ(STRNCMP(sessionDescription.sdpAttributes[0].attributeName, longName.c_str(), MAX_SDP_ATTRIBUTE_NAME_LENGTH), 0);
+        EXPECT_EQ(STRLEN(sessionDescription.sdpAttributes[0].attributeValue), MAX_SDP_ATTRIBUTE_VALUE_LENGTH);
+        EXPECT_EQ(STRNCMP(sessionDescription.sdpAttributes[0].attributeValue, longValue.c_str(), MAX_SDP_ATTRIBUTE_VALUE_LENGTH), 0);
+    });
+
+    assertLFAndCRLF((PCHAR) mediaSdp.c_str(), (INT32) mediaSdp.size(), [&](PCHAR sdp) {
+        SessionDescription sessionDescription;
+        MEMSET(&sessionDescription, 0x00, SIZEOF(SessionDescription));
+        EXPECT_EQ(deserializeSessionDescription(&sessionDescription, sdp), STATUS_SUCCESS);
+        EXPECT_EQ(sessionDescription.mediaCount, 1);
+        EXPECT_EQ(sessionDescription.mediaDescriptions[0].mediaAttributesCount, 1);
+        EXPECT_EQ(STRLEN(sessionDescription.mediaDescriptions[0].sdpAttributes[0].attributeName), MAX_SDP_ATTRIBUTE_NAME_LENGTH);
+        EXPECT_EQ(STRNCMP(sessionDescription.mediaDescriptions[0].sdpAttributes[0].attributeName, longName.c_str(), MAX_SDP_ATTRIBUTE_NAME_LENGTH), 0);
+        EXPECT_EQ(STRLEN(sessionDescription.mediaDescriptions[0].sdpAttributes[0].attributeValue), MAX_SDP_ATTRIBUTE_VALUE_LENGTH);
+        EXPECT_EQ(STRNCMP(sessionDescription.mediaDescriptions[0].sdpAttributes[0].attributeValue, longValue.c_str(), MAX_SDP_ATTRIBUTE_VALUE_LENGTH),
+                  0);
+    });
+}
+
 class IntersectTransceiverDirectionE2ETest : public SdpApiTest,
     public ::testing::WithParamInterface<std::tuple<RTC_RTP_TRANSCEIVER_DIRECTION, RTC_RTP_TRANSCEIVER_DIRECTION, 
                                                       RTC_RTP_TRANSCEIVER_DIRECTION, RTC_RTP_TRANSCEIVER_DIRECTION,
