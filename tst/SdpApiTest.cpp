@@ -3238,6 +3238,152 @@ a=sendrecv
     });
 }
 
+// All DTLS certificate fingerprints emitted and validated by this SDK use
+// SHA-256 (see `dtlsCertificateFingerprint`), so `setRemoteDescription`
+// must keep the sha-256 hex regardless of how many other algorithms the
+// peer advertises. Modern peers (e.g. aiortc, current Chromium) emit
+// `a=fingerprint:` lines for sha-256, sha-384 and sha-512 in that order.
+// Without filtering on the algorithm prefix the last line wins, and DTLS
+// verification later fails with `STATUS_SSL_REMOTE_CERTIFICATE_VERIFICATION_FAILED`.
+const auto sha256FingerprintHex =
+    "51:04:F9:20:45:5C:9D:85:AF:D7:AF:FB:2B:F8:DB:24:66:7B:6A:E3:E3:EF:EC:72:93:6E:01:B8:C9:53:A6:31";
+const auto sha384FingerprintLine = "a=fingerprint:sha-384 "
+                                   "9C:0E:6F:3D:3F:60:36:91:71:51:8B:18:1A:5A:13:5C:0E:1F:34:0B:5C:9D:01:7A:0F:71:60:C5:8B:0C:79"
+                                   ":80:3A:F2:1E:C0:18:99:60:8E:25:7C:5C:0F:46:5C:F1:55";
+const auto sha512FingerprintLine = "a=fingerprint:sha-512 "
+                                   "1C:84:39:E0:24:8B:F8:1F:9B:7E:84:1A:9F:24:43:60:7B:0F:A6:1C:0C:34:6E:C5:BF:67:3F:D6:80:35:5C"
+                                   ":F0:9D:0F:F0:D9:5A:55:6F:5F:80:9D:71:9F:62:F0:51:1E:1F:60:09:B6:51:1C:1D:CE:91:0F:25:8E:11:A4:B5:84";
+
+static void runSetRemoteDescriptionAndAssertSha256Picked(PCHAR sdp, PCHAR expectedSha256Hex)
+{
+    PRtcPeerConnection pRtcPeerConnection = NULL;
+    RtcConfiguration rtcConfiguration;
+    RtcSessionDescriptionInit rtcSessionDescriptionInit;
+
+    MEMSET(&rtcConfiguration, 0x00, SIZEOF(RtcConfiguration));
+    MEMSET(&rtcSessionDescriptionInit, 0x00, SIZEOF(RtcSessionDescriptionInit));
+
+    EXPECT_EQ(createPeerConnection(&rtcConfiguration, &pRtcPeerConnection), STATUS_SUCCESS);
+
+    STRCPY(rtcSessionDescriptionInit.sdp, sdp);
+    rtcSessionDescriptionInit.type = SDP_TYPE_OFFER;
+    EXPECT_EQ(setRemoteDescription(pRtcPeerConnection, &rtcSessionDescriptionInit), STATUS_SUCCESS);
+
+    EXPECT_STREQ(((PKvsPeerConnection) pRtcPeerConnection)->remoteCertificateFingerprint, expectedSha256Hex);
+
+    closePeerConnection(pRtcPeerConnection);
+    freePeerConnection(&pRtcPeerConnection);
+}
+
+TEST_F(SdpApiTest, setRemoteDescription_PicksSha256WhenSha256IsFirstFingerprintLine)
+{
+    auto offer = std::string(R"(v=0
+o=- 7732543171158289043 1565379274 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 1
+a=msid-semantic: WMS
+m=video 16485 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 205.251.233.176
+a=rtcp:9 IN IP4 0.0.0.0
+a=ice-ufrag:9YRc
+a=ice-pwd:/ELMEiczRSsx2OEi2ynq+TbZ
+a=ice-options:trickle
+a=fingerprint:sha-256 )") + sha256FingerprintHex + "\n" + sha384FingerprintLine + "\n" + sha512FingerprintLine + R"(
+a=setup:actpass
+a=mid:1
+a=recvonly
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:96 VP8/90000
+)";
+
+    assertLFAndCRLF((PCHAR) offer.c_str(), offer.size(),
+                    [](PCHAR sdp) { runSetRemoteDescriptionAndAssertSha256Picked(sdp, (PCHAR) sha256FingerprintHex); });
+}
+
+// Same selection logic, but the sha-256 line is *last* in the list —
+// guards against a bug that selects by position rather than by hash name.
+TEST_F(SdpApiTest, setRemoteDescription_PicksSha256WhenSha256IsLastFingerprintLine)
+{
+    auto offer = std::string(R"(v=0
+o=- 7732543171158289043 1565379274 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 1
+a=msid-semantic: WMS
+m=video 16485 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 205.251.233.176
+a=rtcp:9 IN IP4 0.0.0.0
+a=ice-ufrag:9YRc
+a=ice-pwd:/ELMEiczRSsx2OEi2ynq+TbZ
+a=ice-options:trickle
+)") + sha512FingerprintLine + "\n" + sha384FingerprintLine + "\na=fingerprint:sha-256 " + sha256FingerprintHex + R"(
+a=setup:actpass
+a=mid:1
+a=recvonly
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:96 VP8/90000
+)";
+
+    assertLFAndCRLF((PCHAR) offer.c_str(), offer.size(),
+                    [](PCHAR sdp) { runSetRemoteDescriptionAndAssertSha256Picked(sdp, (PCHAR) sha256FingerprintHex); });
+}
+
+// If the peer advertises only non-sha256 fingerprints (sha-384/sha-512), the
+// filter must reject all of them and `setRemoteDescription` must fail with
+// `STATUS_SESSION_DESCRIPTION_MISSING_CERTIFICATE_FINGERPRINT` rather than
+// silently storing an empty fingerprint string and deferring the failure to
+// the DTLS handshake. This guards against the inverse of the sha-256 selection
+// bug — a regression that, say, defaults to the last seen line on no-match.
+static void runSetRemoteDescriptionAndAssertMissingFingerprint(PCHAR sdp)
+{
+    PRtcPeerConnection pRtcPeerConnection = NULL;
+    RtcConfiguration rtcConfiguration;
+    RtcSessionDescriptionInit rtcSessionDescriptionInit;
+
+    MEMSET(&rtcConfiguration, 0x00, SIZEOF(RtcConfiguration));
+    MEMSET(&rtcSessionDescriptionInit, 0x00, SIZEOF(RtcSessionDescriptionInit));
+
+    EXPECT_EQ(createPeerConnection(&rtcConfiguration, &pRtcPeerConnection), STATUS_SUCCESS);
+
+    STRCPY(rtcSessionDescriptionInit.sdp, sdp);
+    rtcSessionDescriptionInit.type = SDP_TYPE_OFFER;
+    EXPECT_EQ(setRemoteDescription(pRtcPeerConnection, &rtcSessionDescriptionInit),
+              STATUS_SESSION_DESCRIPTION_MISSING_CERTIFICATE_FINGERPRINT);
+
+    closePeerConnection(pRtcPeerConnection);
+    freePeerConnection(&pRtcPeerConnection);
+}
+
+TEST_F(SdpApiTest, setRemoteDescription_FailsWhenNoSha256FingerprintProvided)
+{
+    auto offer = std::string(R"(v=0
+o=- 7732543171158289043 1565379274 IN IP4 127.0.0.1
+s=-
+t=0 0
+a=group:BUNDLE 1
+a=msid-semantic: WMS
+m=video 16485 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 205.251.233.176
+a=rtcp:9 IN IP4 0.0.0.0
+a=ice-ufrag:9YRc
+a=ice-pwd:/ELMEiczRSsx2OEi2ynq+TbZ
+a=ice-options:trickle
+)") + sha384FingerprintLine + "\n" + sha512FingerprintLine + R"(
+a=setup:actpass
+a=mid:1
+a=recvonly
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:96 VP8/90000
+)";
+
+    assertLFAndCRLF((PCHAR) offer.c_str(), offer.size(),
+                    [](PCHAR sdp) { runSetRemoteDescriptionAndAssertMissingFingerprint(sdp); });
+}
+
 } // namespace webrtcclient
 } // namespace video
 } // namespace kinesis
