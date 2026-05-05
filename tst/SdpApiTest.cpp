@@ -1821,6 +1821,28 @@ a=ssrc:1644235696 cname:{36a6a74c-73a4-594b-9bb0-023b4d357280})";
     });
 }
 
+TEST_F(SdpApiTest, deserializeSessionDescription_SessionInformationTruncatedAtMaxLength)
+{
+    std::string longInfo(MAX_SDP_SESSION_INFORMATION_LENGTH + 50, 'A');
+    std::string sdpStr = "v=0\ni=" + longInfo + "\n";
+
+    SessionDescription sessionDescription;
+    MEMSET(&sessionDescription, 0x00, SIZEOF(SessionDescription));
+    EXPECT_EQ(STATUS_SUCCESS, deserializeSessionDescription(&sessionDescription, (PCHAR) sdpStr.c_str()));
+    EXPECT_EQ(STRLEN(sessionDescription.sessionInformation), (UINT32) MAX_SDP_SESSION_INFORMATION_LENGTH);
+}
+
+TEST_F(SdpApiTest, deserializeSessionDescription_MediaTitleTruncatedAtMaxLength)
+{
+    std::string longTitle(MAX_SDP_MEDIA_TITLE_LENGTH + 50, 'B');
+    std::string sdpStr = "v=0\nm=video 9 UDP/TLS/RTP/SAVPF 96\ni=" + longTitle + "\n";
+
+    SessionDescription sessionDescription;
+    MEMSET(&sessionDescription, 0x00, SIZEOF(SessionDescription));
+    EXPECT_EQ(STATUS_SUCCESS, deserializeSessionDescription(&sessionDescription, (PCHAR) sdpStr.c_str()));
+    EXPECT_EQ(STRLEN(sessionDescription.mediaDescriptions[0].mediaTitle), (UINT32) MAX_SDP_MEDIA_TITLE_LENGTH);
+}
+
 TEST_P(SdpApiTest_SdpMatch, populateSingleMediaSection_TestH264Fmtp)
 {
     PRtcPeerConnection pRtcPeerConnection = NULL;

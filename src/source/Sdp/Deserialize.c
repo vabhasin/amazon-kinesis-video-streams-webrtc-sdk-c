@@ -100,7 +100,7 @@ STATUS deserializeSessionDescription(PSessionDescription pSessionDescription, PC
             // Media Title
             if (0 == STRNCMP(curr, SDP_INFORMATION_MARKER, (ARRAY_SIZE(SDP_INFORMATION_MARKER) - 1))) {
                 STRNCPY(pSessionDescription->mediaDescriptions[pSessionDescription->mediaCount - 1].mediaTitle, (curr + SDP_ATTRIBUTE_LENGTH),
-                        MIN(MAX_SDP_MEDIA_NAME_LENGTH, lineLen - SDP_ATTRIBUTE_LENGTH));
+                        MIN(MAX_SDP_MEDIA_TITLE_LENGTH, lineLen - SDP_ATTRIBUTE_LENGTH));
             }
         } else {
             // SDP Session Name
@@ -112,7 +112,7 @@ STATUS deserializeSessionDescription(PSessionDescription pSessionDescription, PC
             // SDP Session Name
             if (0 == STRNCMP(curr, SDP_INFORMATION_MARKER, (ARRAY_SIZE(SDP_INFORMATION_MARKER) - 1))) {
                 STRNCPY(pSessionDescription->sessionInformation, (curr + SDP_ATTRIBUTE_LENGTH),
-                        MIN(MAX_SDP_MEDIA_NAME_LENGTH, lineLen - SDP_ATTRIBUTE_LENGTH));
+                        MIN(MAX_SDP_SESSION_INFORMATION_LENGTH, lineLen - SDP_ATTRIBUTE_LENGTH));
             }
 
             // SDP URI
