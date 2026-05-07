@@ -84,6 +84,9 @@ jobs:
             cmake_flags: "-DBUILD_TEST=ON -DUSE_OPENSSL=OFF -DUSE_MBEDTLS=ON"
           - name: Static MbedTLS
             cmake_flags: "-DBUILD_TEST=ON -DBUILD_STATIC_LIBS=ON -DUSE_OPENSSL=OFF -DUSE_MBEDTLS=ON"
+          - name: Shared OpenSSL System Deps
+            cmake_flags: "-DBUILD_TEST=ON -DBUILD_DEPENDENCIES=OFF"
+            system_deps: true
       fail-fast: false
 
     permissions:
@@ -112,6 +115,11 @@ jobs:
       - name: Install GStreamer
         run: |
           brew install gstreamer
+
+      - name: Install system dependencies
+        if: ${{ matrix.config.system_deps }}
+        run: |
+          brew install srtp libusrsctp libwebsockets
 
       - name: Configure and build ${{ matrix.config.name }}
         run: |
@@ -278,6 +286,9 @@ jobs:
             cmake-args: "-DUSE_OPENSSL=ON -DUSE_MBEDTLS=OFF"
           - name: lws
             cmake-args: "-DUSE_OPENSSL=OFF -DUSE_MBEDTLS=ON"
+          - name: system-deps-openssl
+            cmake-args: "-DBUILD_DEPENDENCIES=OFF -DUSE_OPENSSL=ON -DUSE_MBEDTLS=OFF"
+            system_deps: true
       fail-fast: false
 
     runs-on: ubuntu-latest
@@ -299,6 +310,12 @@ jobs:
         run: |
           apt-get update
           apt-get install -y git cmake build-essential pkg-config file
+
+      - name: Install build dependencies
+        if: ${{ matrix.build-configuration.system_deps }}
+        run: |
+          apt-get install -y libsrtp2-dev libusrsctp-dev libssl-dev libwebsockets-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 
       - name: Setup GCC
         if: ${{ matrix.compiler == 'gcc' }}
