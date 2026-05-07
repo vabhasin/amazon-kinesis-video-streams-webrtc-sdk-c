@@ -630,8 +630,8 @@ STATUS populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKvsRtp
     }
 
     STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "fingerprint");
-    STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, "sha-256 ");
-    STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue + 8, pCertificateFingerprint);
+    STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, DTLS_FINGERPRINT_SHA256_PREFIX);
+    STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue + DTLS_FINGERPRINT_SHA256_PREFIX_LEN, pCertificateFingerprint);
     attributeCount++;
 
     STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "setup");
@@ -903,6 +903,13 @@ STATUS populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKvsRtp
                      SIZEOF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue), "%" PRId64 " " TWCC_SDP_ATTR, payloadType);
         CHK_ERR(amountWritten > 0, STATUS_INTERNAL_ERROR, "Full rtcp-fb twcc could not be written");
         attributeCount++;
+
+        STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "extmap");
+        amountWritten = SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue,
+                                 SIZEOF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue), "%u %s", pKvsPeerConnection->twccExtId,
+                                 TWCC_EXT_URL);
+        CHK_ERR(amountWritten > 0, STATUS_INTERNAL_ERROR, "Full extmap twcc could not be written");
+        attributeCount++;
     }
 
     pSdpMediaDescription->mediaAttributesCount = attributeCount;
@@ -947,8 +954,8 @@ STATUS populateSessionDescriptionDataChannel(PKvsPeerConnection pKvsPeerConnecti
     }
 
     STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "fingerprint");
-    STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, "sha-256 ");
-    STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue + 8, pCertificateFingerprint);
+    STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue, DTLS_FINGERPRINT_SHA256_PREFIX);
+    STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue + DTLS_FINGERPRINT_SHA256_PREFIX_LEN, pCertificateFingerprint);
     attributeCount++;
 
     STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "setup");
