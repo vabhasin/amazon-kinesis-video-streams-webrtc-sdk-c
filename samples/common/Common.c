@@ -802,6 +802,7 @@ STATUS createSampleConfiguration(PCHAR channelName, SIGNALING_CHANNEL_ROLE_TYPE 
 {
     STATUS retStatus = STATUS_SUCCESS;
     PCHAR pAccessKey, pSecretKey, pSessionToken, pLogFilesDir = (PCHAR) FILE_LOGGER_LOG_FILE_DIRECTORY_PATH;
+    PCHAR pMaxLogFiles, pLogFileDir;
     PSampleConfiguration pSampleConfiguration = NULL;
     UINT32 numLogFiles = DEFAULT_MAX_NUMBER_OF_LOG_FILES;
 
@@ -828,14 +829,14 @@ STATUS createSampleConfiguration(PCHAR channelName, SIGNALING_CHANNEL_ROLE_TYPE 
         pSessionToken = NULL;
     }
 
-    if (!IS_NULL_OR_EMPTY_STRING(GETENV(MAX_NUM_LOG_FILES_ENV_VAR))) {
-        CHK_STATUS_ERR(STRTOUI32(GETENV(MAX_NUM_LOG_FILES_ENV_VAR), NULL, 10, &numLogFiles), STATUS_INVALID_ARG,
-                       "Failed to parse max number of log files: %s", GETENV(MAX_NUM_LOG_FILES_ENV_VAR));
+    if (!IS_NULL_OR_EMPTY_STRING((pMaxLogFiles = GETENV(MAX_NUM_LOG_FILES_ENV_VAR)))) {
+        CHK_STATUS_ERR(STRTOUI32(pMaxLogFiles, NULL, 10, &numLogFiles), STATUS_INVALID_ARG,
+                       "Failed to parse max number of log files: %s", pMaxLogFiles);
         CHK_ERR(CHECK_IN_RANGE(numLogFiles, 1, 100), STATUS_INVALID_ARG, "MaxLogFiles must be in range: [1, 100], was: %d", numLogFiles);
     }
 
-    if (!IS_NULL_OR_EMPTY_STRING(GETENV(LOG_FILE_DIR))) {
-        pLogFilesDir = GETENV(LOG_FILE_DIR);
+    if (!IS_NULL_OR_EMPTY_STRING((pLogFileDir = GETENV(LOG_FILE_DIR)))) {
+        pLogFilesDir = pLogFileDir;
     }
 
     // If the env is set, we generate normal log files apart from filtered profile log files
