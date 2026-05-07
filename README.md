@@ -194,7 +194,7 @@ On Ubuntu:
 `sudo apt-get install libsrtp2-dev libusrsctp-dev libwebsockets-dev`
 
 On MacOS:
-`brew install srtp libusrsctp libwebsockets `
+`brew install srtp libusrsctp libwebsockets`
 
 To use OpenSSL:
 ```shell

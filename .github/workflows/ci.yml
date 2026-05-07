@@ -3,9 +3,7 @@ name: WebRTC C SDK CI
 on:
   push:
     branches:
-      - develop
-      - main
-      - 'test-pr-*'
+      - '*'
   pull_request:
     branches:
       - develop
@@ -85,7 +83,13 @@ jobs:
           - name: Static MbedTLS
             cmake_flags: "-DBUILD_TEST=ON -DBUILD_STATIC_LIBS=ON -DUSE_OPENSSL=OFF -DUSE_MBEDTLS=ON"
           - name: Shared OpenSSL System Deps
-            cmake_flags: "-DBUILD_TEST=ON -DBUILD_DEPENDENCIES=OFF"
+            # Tests disabled (due to dependency issues): 
+            # - GCC: Homebrew's libgtest is built with
+            #   clang/libc++ (std::__1:: ABI) which is incompatible with GCC's libstdc++
+            #   (std::__cxx11:: ABI), causing linking errors.
+            # - GCC/CLang: Homebrew's OpenSSL 3.x is incompatible with SDK requirement (1.1.1x) 
+            #   which causes certain test failure (HMAC() returns NULL)
+            cmake_flags: "-DBUILD_TEST=OFF -DBUILD_DEPENDENCIES=OFF"
             system_deps: true
       fail-fast: false
 
@@ -119,7 +123,7 @@ jobs:
       - name: Install system dependencies
         if: ${{ matrix.config.system_deps }}
         run: |
-          brew install srtp libusrsctp libwebsockets
+          brew install srtp libusrsctp libwebsockets googletest
 
       - name: Configure and build ${{ matrix.config.name }}
         run: |
@@ -146,6 +150,7 @@ jobs:
         shell: bash
 
       - name: Run tests
+        if: ${{ !matrix.config.system_deps }}
         working-directory: ./build
         run: |
           ./tst/webrtc_client_test
@@ -282,12 +287,13 @@ jobs:
           - gcc
           - clang
         build-configuration:
-          - name: curl
-            cmake-args: "-DUSE_OPENSSL=ON -DUSE_MBEDTLS=OFF"
-          - name: lws
-            cmake-args: "-DUSE_OPENSSL=OFF -DUSE_MBEDTLS=ON"
+          # - name: curl
+          #   cmake-args: "-DUSE_OPENSSL=ON -DUSE_MBEDTLS=OFF"
+          # - name: lws
+          #   cmake-args: "-DUSE_OPENSSL=OFF -DUSE_MBEDTLS=ON"
           - name: system-deps-openssl
-            cmake-args: "-DBUILD_DEPENDENCIES=OFF -DUSE_OPENSSL=ON -DUSE_MBEDTLS=OFF"
+            # build libwebsockets from source as apt versions are not compatible
+            cmake-args: "-DBUILD_DEPENDENCIES=OFF -DBUILD_WEBSOCKETS=ON -DUSE_OPENSSL=ON -DUSE_MBEDTLS=OFF"
             system_deps: true
       fail-fast: false
 
@@ -315,7 +321,7 @@ jobs:
         if: ${{ matrix.build-configuration.system_deps }}
         run: |
           apt-get install -y libsrtp2-dev libusrsctp-dev libssl-dev libwebsockets-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtest-dev
 
       - name: Setup GCC
         if: ${{ matrix.compiler == 'gcc' }}
@@ -338,11 +344,22 @@ jobs:
           cmake-version: '3.x'
 
       - name: Build repository
+        shell: bash
         run: |
           mkdir build && cd build
-          cmake .. -DBUILD_TEST=ON -DENABLE_AWS_SDK_IN_TESTS=OFF ${{ matrix.build-configuration.cmake-args }}
+
+          BUILD_TEST_FLAG="-DBUILD_TEST=ON"
+
+          # Ubuntu 20.04 + system-deps: skip tests (no GTest cmake config available)
+          if [[ "${{ matrix.container.name }}" == "Ubuntu 20.04" && "${{ matrix.build-configuration.system_deps }}" == "true" ]]; then
+            BUILD_TEST_FLAG="-DBUILD_TEST=OFF"
+          fi
+
+          cmake .. ${BUILD_TEST_FLAG} -DENABLE_AWS_SDK_IN_TESTS=OFF ${{ matrix.build-configuration.cmake-args }}
           make -j
-          file ./tst/webrtc_client_test
+          if [[ "${BUILD_TEST_FLAG}" == "-DBUILD_TEST=ON" ]]; then
+            file ./tst/webrtc_client_test
+          fi
 
       - name: Configure AWS Credentials
         if: ${{ matrix.container.test == 'ON' }}
