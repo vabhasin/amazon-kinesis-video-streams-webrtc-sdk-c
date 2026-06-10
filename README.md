@@ -125,7 +125,7 @@ $env:Path += ';C:\webrtc\open-source\bin;C:\tools\pthreads-w32-2-9-1-release\Pre
 ### Dependency requirements
 
 These would be applicable if the SDK is being linked with system dependencies instead of building from source by the SDK.
-`libmbedtls`: `>= 2.25.0 & < 3.x.x`
+`libmbedtls`: `>= 2.25.0 & < 4.x.x`
 `libopenssl`: `= 1.1.1x`
 `libsrtp2` : `<= 2.5.0`
 `libusrsctp` : `<= 0.9.5.0`
@@ -147,7 +147,11 @@ You can pass the following options to `cmake ..`:
 * `-DENABLE_DATA_CHANNEL` -- Build SDK & samples with data channel. ON by default.
 * `-DBUILD_STATIC_LIBS` -- Build all KVS WebRTC and third-party libraries as static libraries. Default: OFF (shared build).
 * `-DADD_MUCLIBC`  -- Add -muclibc c flag
-* `-DBUILD_DEPENDENCIES` -- Whether or not to build depending libraries from source
+* `-DBUILD_DEPENDENCIES` -- Whether or not to build depending libraries from source. ON by default.
+* `-DBUILD_WEBSOCKETS` -- Build libwebsockets from source. Defaults to value of BUILD_DEPENDENCIES.
+* `-DBUILD_SRTP` -- Build libsrtp from source. Defaults to value of BUILD_DEPENDENCIES.
+* `-DUSE_LIBSRTP3` -- Build and link against libsrtp 3.x (cisco/libsrtp `main`, renamed to `libsrtp3`) instead of the long-standing 2.x default. OFF by default. The 3.x line adds PSA Crypto / mbedTLS 4 support but introduces public API breaks (opaque `srtp_policy_t`, separate src/dst buffers on `srtp_protect`/`srtp_unprotect`, separate master key + salt) — these are handled internally by the SDK. Use this if your platform requires mbedTLS 4 (e.g. ESP-IDF v6).
+* `-DBUILD_USRSCTP` -- Build libusrsctp from source. Defaults to value of BUILD_DEPENDENCIES.
 * `-DBUILD_OPENSSL_PLATFORM` -- If building OpenSSL what is the target platform
 * `-DBUILD_LIBSRTP_HOST_PLATFORM` -- If building LibSRTP what is the current platform
 * `-DBUILD_LIBSRTP_DESTINATION_PLATFORM` -- If building LibSRTP what is the destination platform
@@ -164,6 +168,9 @@ You can pass the following options to `cmake ..`:
 * `-DENABLE_KVS_THREADPOOL` -- Enable the KVS threadpool which is off by default.
 * `-DENABLE_STATS_CALCULATION_CONTROL` -- Enable the runtime control of ICE agent stats calculations.
 * `-DINCREASE_PRECISION_TIMING_LOGS` -- Default ON. ON=Use 2 decimals in PROFILE-logs timing. OFF=Truncates down to whole ms.
+* `-DPRODUCER_C_VERSION_OVERRIDE` -- Override KVS Producer-C version (git tag).
+* `-DPIC_VERSION_OVERRIDE` -- Override KVS PIC version (git tag).
+* `-DPARALLEL_BUILD` -- Build dependencies with multiple cores. OFF by default. Disabled on Windows.
 
 These options get propagated to [PIC](https://github.com/awslabs/amazon-kinesis-video-streams-pic):
 * `-DKVS_STACK_SIZE` -- Default stack size for threads created using THREAD_CREATE(), in bytes.
@@ -203,8 +210,34 @@ To use MBedTLS:
 cmake .. -DBUILD_DEPENDENCIES=OFF -DUSE_OPENSSL=OFF -DUSE_MBEDTLS=ON
 ```
 
-Note: Please follow the dependency requirements to confirm the version requirements are satisfied to use the SDK with system installed dependencies.
+> **Note:** Please follow the dependency requirements to confirm the version requirements are satisfied to use the SDK with system installed dependencies.
 If the versions are not satisfied, this option would not work and enabling the SDK to build dependencies for you would be the best option to go ahead with.
+
+
+> [!CAUTION]
+> System-installed libwebsockets and libsrtp packages (from apt, brew, etc.) are typically built against OpenSSL. If you are building the SDK with `-DUSE_MBEDTLS=ON` and relying on system packages, you might encounter linker or runtime erros. You must also build these dependencies from source (`-DBUILD_DEPENDENCIES=ON`) to ensure they are compiled against mbedTLS. This does not apply if you have manually built and installed mbedTLS-linked versions of these libraries.
+
+> [!TIP]
+> If you are unsure, recommendation is to enable SDK to build dependencies using `-DBUILD_DEPENDENCIES=ON`
+
+### Building selective dependencies from source
+
+If your system has some compatible dependencies but not others, you can selectively build individual libraries from source using the per-dependency flags. Each flag defaults to the value of `BUILD_DEPENDENCIES`.
+
+To just build libwebsockets from source and use system package for others
+```shell
+cmake .. -DBUILD_DEPENDENCIES=OFF -DBUILD_WEBSOCKETS=ON -DUSE_OPENSSL=ON
+```
+
+To build everything from source except libusrsctp (use system package):
+```shell
+cmake .. -DBUILD_DEPENDENCIES=ON -DBUILD_USRSCTP=OFF
+```
+
+Available per-dependency flags:
+* `-DBUILD_WEBSOCKETS=ON/OFF` -- Build libwebsockets from source (default: same as BUILD_DEPENDENCIES)
+* `-DBUILD_SRTP=ON/OFF` -- Build libsrtp from source (default: same as BUILD_DEPENDENCIES)
+* `-DBUILD_USRSCTP=ON/OFF` -- Build libusrsctp from source (default: same as BUILD_DEPENDENCIES)
 
 ## Run
 ### Setup your environment with your AWS account credentials and AWS region:
@@ -492,8 +525,8 @@ freeIotCredentialProvider(&pSampleConfiguration->pCredentialProvider);
 Build the samples using IoT Core credentials mode:
 
 ```shell
-cmake .. -DIOT_CORE_ENABLE_CREDENTIALS=ON
-make
+cmake .. -DIOT_CORE_ENABLE_CREDENTIALS=ON -DPARALLEL_BUILD=ON
+make -j
 ```
 
 Set the environment variables for IoT Core credentials:
@@ -544,30 +577,9 @@ channelInfo.cachingPolicy = CACHE_POLICY;
 
 ## TWCC support
 
-Transport Wide Congestion Control (TWCC) is a mechanism in WebRTC designed to enhance the performance and reliability of real-time communication over the internet. TWCC addresses the challenges of network congestion by providing detailed feedback on the transport of packets across the network, enabling adaptive bitrate control and optimization of media streams in real-time. This feedback mechanism is crucial for maintaining high-quality audio and video communication, as it allows senders to adjust their transmission strategies based on comprehensive information about packet losses, delays, and jitter experienced across the entire transport path.
+TWCC (Transport-Wide Congestion Control) enables adaptive bitrate control by monitoring packet delivery timing across the network. It is enabled by default in the SDK samples via `pSampleConfiguration->enableTwcc = TRUE`.
 
-The importance of TWCC in WebRTC lies in its ability to ensure efficient use of available network bandwidth while minimizing the negative impacts of network congestion. By monitoring the delivery of packets across the network, TWCC helps identify bottlenecks and adjust the media transmission rates accordingly. This dynamic approach to congestion control is essential for preventing degradation in call quality, such as pixelation, stuttering, or drops in audio and video streams, especially in environments with fluctuating network conditions.
-
-To learn more about TWCC, check [TWCC spec](https://datatracker.ietf.org/doc/html/draft-holmer-rmcat-transport-wide-cc-extensions-01)
-
-### Enabling TWCC support
-
-TWCC is enabled by default in the SDK samples (via `pSampleConfiguration->enableTwcc`) flag. In order to disable it, set this flag to `FALSE`.
-
-```c
-pSampleConfiguration->enableTwcc = FALSE;
-```
-
-If not using the samples directly, 2 things need to be done to set up Twcc:
-1. Set the `disableSenderSideBandwidthEstimation` to `FALSE`:
-```c
-configuration.kvsRtcConfiguration.disableSenderSideBandwidthEstimation = FALSE;
-```
-2. Set the callback that will have the business logic to modify the bitrate based on packet loss information. The callback can be set using `peerConnectionOnSenderBandwidthEstimation()`:
-```c
-CHK_STATUS(peerConnectionOnSenderBandwidthEstimation(pSampleStreamingSession->pPeerConnection, (UINT64) pSampleStreamingSession,
-                                                     sampleSenderBandwidthEstimationHandler));
-```
+For full details, including how to configure it, override the estimator or bitrate logic, and troubleshoot, see [docs/TWCC.md](docs/TWCC.md).
 
 ## Use Pre-generated Certificates
 The certificate generating function ([createCertificateAndKey](https://awslabs.github.io/amazon-kinesis-video-streams-webrtc-sdk-c/Dtls__openssl_8c.html#a451c48525b0c0a8919a880d6834c1f7f)) in createDtlsSession() can take between 5 - 15 seconds in low performance embedded devices, it is called for every peer connection creation when KVS WebRTC receives an offer. To avoid this extra start-up latency, certificate can be pre-generated and passed into the PeerConnectionConfiguration when offer comes.
@@ -743,6 +755,9 @@ To help support this issue, please share the following details to `kinesis-video
 All Public APIs are documented in our [Include.h](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/blob/main/src/include/com/amazonaws/kinesis/video/webrtcclient/Include.h), we also generate a [Doxygen](https://awslabs.github.io/amazon-kinesis-video-streams-webrtc-sdk-c/) each commit for easier navigation.
 
 See the [Status code reference](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/wiki/WebRTC-Status-Code-Reference) wiki page.
+
+Additional guides:
+- [TWCC (Transport-Wide Congestion Control)](docs/TWCC.md) — bandwidth estimation, bitrate adaptation, and troubleshooting
 
 Refer to [related](#related) for more about WebRTC and KVS.
 

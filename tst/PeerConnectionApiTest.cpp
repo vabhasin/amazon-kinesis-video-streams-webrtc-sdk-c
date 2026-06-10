@@ -33,6 +33,17 @@ TEST_F(PeerConnectionApiTest, deserializeRtcIceCandidateInit)
     auto validCandidate2 = "{candidate: \"candidate: 1 2 3\", \"sdpMid\": 0}";
     EXPECT_EQ(deserializeRtcIceCandidateInit((PCHAR) validCandidate2, STRLEN(validCandidate2), &rtcIceCandidateInit), STATUS_SUCCESS);
     EXPECT_STREQ(rtcIceCandidateInit.candidate, "candidate: 1 2 3");
+
+    std::string oversizedCandidate = "{candidate: \"";
+    oversizedCandidate += std::string(MAX_ICE_CANDIDATE_INIT_CANDIDATE_LEN + 10, 'A');
+    oversizedCandidate += "\"}";
+    EXPECT_EQ(deserializeRtcIceCandidateInit((PCHAR) oversizedCandidate.c_str(), STRLEN(oversizedCandidate.c_str()), &rtcIceCandidateInit),
+              STATUS_ICE_CANDIDATE_INIT_MALFORMED);
+
+    std::string maxLengthCandidate = "{candidate: \"";
+    maxLengthCandidate += std::string(MAX_ICE_CANDIDATE_INIT_CANDIDATE_LEN, 'B');
+    maxLengthCandidate += "\"}";
+    EXPECT_EQ(deserializeRtcIceCandidateInit((PCHAR) maxLengthCandidate.c_str(), STRLEN(maxLengthCandidate.c_str()), &rtcIceCandidateInit), STATUS_SUCCESS);
 }
 
 TEST_F(PeerConnectionApiTest, serializeSessionDescriptionInit)
@@ -195,6 +206,70 @@ TEST_F(PeerConnectionApiTest, connectionState)
 
     closePeerConnection(pc);
     freePeerConnection(&pc);
+}
+
+TEST_F(PeerConnectionApiTest, peerConnectionUpdateIceServersNullArgs)
+{
+    PRtcPeerConnection pRtcPeerConnection = NULL;
+    RtcConfiguration configuration;
+    RtcIceServer iceServers[1];
+
+    MEMSET(&configuration, 0x00, SIZEOF(RtcConfiguration));
+    MEMSET(iceServers, 0x00, SIZEOF(iceServers));
+    SNPRINTF(iceServers[0].urls, MAX_ICE_CONFIG_URI_LEN, "stun:stun.kinesisvideo.us-west-2.amazonaws.com:443");
+
+    // NULL peer connection
+    EXPECT_EQ(STATUS_NULL_ARG, peerConnectionUpdateIceServers(NULL, iceServers, 1));
+
+    // NULL ice servers array
+    EXPECT_EQ(STATUS_SUCCESS, createPeerConnection(&configuration, &pRtcPeerConnection));
+    EXPECT_EQ(STATUS_NULL_ARG, peerConnectionUpdateIceServers(pRtcPeerConnection, NULL, 1));
+
+    // Zero count
+    EXPECT_EQ(STATUS_INVALID_ARG, peerConnectionUpdateIceServers(pRtcPeerConnection, iceServers, 0));
+
+    closePeerConnection(pRtcPeerConnection);
+    freePeerConnection(&pRtcPeerConnection);
+}
+
+TEST_F(PeerConnectionApiTest, peerConnectionUpdateIceServersSuccess)
+{
+    PRtcPeerConnection pRtcPeerConnection = NULL;
+    RtcConfiguration configuration;
+    RtcIceServer iceServers[1];
+
+    MEMSET(&configuration, 0x00, SIZEOF(RtcConfiguration));
+    MEMSET(iceServers, 0x00, SIZEOF(iceServers));
+    SNPRINTF(iceServers[0].urls, MAX_ICE_CONFIG_URI_LEN, "stun:stun.kinesisvideo.us-west-2.amazonaws.com:443");
+
+    EXPECT_EQ(STATUS_SUCCESS, createPeerConnection(&configuration, &pRtcPeerConnection));
+    EXPECT_EQ(STATUS_SUCCESS, peerConnectionUpdateIceServers(pRtcPeerConnection, iceServers, 1));
+
+    closePeerConnection(pRtcPeerConnection);
+    freePeerConnection(&pRtcPeerConnection);
+}
+
+TEST_F(PeerConnectionApiTest, peerConnectionUpdateIceServersDuplicate)
+{
+    PRtcPeerConnection pRtcPeerConnection = NULL;
+    RtcConfiguration configuration;
+    RtcIceServer iceServers[1];
+
+    MEMSET(&configuration, 0x00, SIZEOF(RtcConfiguration));
+
+    // Create peer connection without any ICE servers
+    EXPECT_EQ(STATUS_SUCCESS, createPeerConnection(&configuration, &pRtcPeerConnection));
+
+    // Add a STUN server via the update API
+    MEMSET(iceServers, 0x00, SIZEOF(iceServers));
+    SNPRINTF(iceServers[0].urls, MAX_ICE_CONFIG_URI_LEN, "stun:stun.kinesisvideo.us-west-2.amazonaws.com:443");
+    EXPECT_EQ(STATUS_SUCCESS, peerConnectionUpdateIceServers(pRtcPeerConnection, iceServers, 1));
+
+    // Try to add the same server again -- should succeed with duplicate silently skipped
+    EXPECT_EQ(STATUS_SUCCESS, peerConnectionUpdateIceServers(pRtcPeerConnection, iceServers, 1));
+
+    closePeerConnection(pRtcPeerConnection);
+    freePeerConnection(&pRtcPeerConnection);
 }
 
 } // namespace webrtcclient

@@ -1280,6 +1280,275 @@ TEST_F(PeerConnectionFunctionalityTest, aggressiveNominationDTLSRaceConditionChe
     }
 }
 
+// Verify that dynamically adding TURN servers via peerConnectionUpdateIceServers
+// enables connection establishment with relay-only transport policy
+TEST_F(PeerConnectionFunctionalityTest, connectTwoPeersForcedTURNWithDynamicIceServers)
+{
+    ASSERT_EQ(TRUE, mAccessKeyIdSet);
+
+    RtcConfiguration offerConfig, answerConfig, fullConfig;
+    PRtcPeerConnection offerPc = NULL, answerPc = NULL;
+    UINT32 i, uriCount = 0, iceConfigCount;
+    PIceConfigInfo pIceConfigInfo;
+    RtcIceServer turnServers[MAX_ICE_SERVERS_COUNT];
+
+    initializeSignalingClient();
+
+    // Fetch full ICE config (STUN + TURN) into fullConfig for extracting TURN servers later
+    MEMSET(&fullConfig, 0x00, SIZEOF(RtcConfiguration));
+    getIceServers(&fullConfig);
+
+    // Create PCs with relay-only policy and only a STUN server (no TURN)
+    MEMSET(&offerConfig, 0x00, SIZEOF(RtcConfiguration));
+    offerConfig.iceTransportPolicy = ICE_TRANSPORT_POLICY_RELAY;
+    SNPRINTF(offerConfig.iceServers[0].urls, MAX_ICE_CONFIG_URI_LEN, KINESIS_VIDEO_STUN_URL, TEST_DEFAULT_REGION, TEST_DEFAULT_STUN_URL_POSTFIX);
+
+    MEMSET(&answerConfig, 0x00, SIZEOF(RtcConfiguration));
+    answerConfig.iceTransportPolicy = ICE_TRANSPORT_POLICY_RELAY;
+    SNPRINTF(answerConfig.iceServers[0].urls, MAX_ICE_CONFIG_URI_LEN, KINESIS_VIDEO_STUN_URL, TEST_DEFAULT_REGION, TEST_DEFAULT_STUN_URL_POSTFIX);
+
+    EXPECT_EQ(STATUS_SUCCESS, createPeerConnection(&offerConfig, &offerPc));
+    EXPECT_EQ(STATUS_SUCCESS, createPeerConnection(&answerConfig, &answerPc));
+
+    // Extract TURN servers from the full config (skip index 0 which is STUN)
+    MEMSET(turnServers, 0x00, SIZEOF(turnServers));
+    ASSERT_EQ(STATUS_SUCCESS, signalingClientGetIceConfigInfoCount(mSignalingClientHandle, &iceConfigCount));
+    for (uriCount = 0, i = 0; i < iceConfigCount; i++) {
+        ASSERT_EQ(STATUS_SUCCESS, signalingClientGetIceConfigInfo(mSignalingClientHandle, i, &pIceConfigInfo));
+        for (UINT32 j = 0; j < pIceConfigInfo->uriCount; j++) {
+            STRNCPY(turnServers[uriCount].urls, pIceConfigInfo->uris[j], MAX_ICE_CONFIG_URI_LEN);
+            STRNCPY(turnServers[uriCount].credential, pIceConfigInfo->password, MAX_ICE_CONFIG_CREDENTIAL_LEN);
+            STRNCPY(turnServers[uriCount].username, pIceConfigInfo->userName, MAX_ICE_CONFIG_USER_NAME_LEN);
+            uriCount++;
+        }
+    }
+    ASSERT_TRUE(uriCount > 0);
+
+    // Dynamically add TURN servers to both peer connections
+    EXPECT_EQ(STATUS_SUCCESS, peerConnectionUpdateIceServers(offerPc, turnServers, uriCount));
+    EXPECT_EQ(STATUS_SUCCESS, peerConnectionUpdateIceServers(answerPc, turnServers, uriCount));
+
+    // Now connect — relay candidates should be generated from the dynamically added TURN servers
+    EXPECT_EQ(TRUE, connectTwoPeers(offerPc, answerPc));
+
+    closePeerConnection(offerPc);
+    closePeerConnection(answerPc);
+
+    freePeerConnection(&offerPc);
+    freePeerConnection(&answerPc);
+
+    deinitializeSignalingClient();
+}
+
+// Verify that peerConnectionUpdateIceServers returns error after ICE agent has failed
+TEST_F(PeerConnectionFunctionalityTest, updateIceServersAfterIceFailure)
+{
+    ASSERT_EQ(TRUE, mAccessKeyIdSet);
+
+    RtcConfiguration configuration;
+    PRtcPeerConnection offerPc = NULL, answerPc = NULL;
+    UINT32 i, uriCount = 0, iceConfigCount;
+    PIceConfigInfo pIceConfigInfo;
+    RtcIceServer turnServers[MAX_ICE_SERVERS_COUNT];
+
+    initializeSignalingClient();
+
+    // Create PCs with relay-only policy and NO TURN servers — connection will fail
+    MEMSET(&configuration, 0x00, SIZEOF(RtcConfiguration));
+    configuration.iceTransportPolicy = ICE_TRANSPORT_POLICY_RELAY;
+
+    EXPECT_EQ(STATUS_SUCCESS, createPeerConnection(&configuration, &offerPc));
+    EXPECT_EQ(STATUS_SUCCESS, createPeerConnection(&configuration, &answerPc));
+
+    // Attempt to connect — will fail because no relay candidates can be generated
+    EXPECT_EQ(FALSE, connectTwoPeers(offerPc, answerPc));
+
+    // Now try to add TURN servers after ICE has failed
+    MEMSET(turnServers, 0x00, SIZEOF(turnServers));
+    ASSERT_EQ(STATUS_SUCCESS, signalingClientGetIceConfigInfoCount(mSignalingClientHandle, &iceConfigCount));
+    for (uriCount = 0, i = 0; i < iceConfigCount; i++) {
+        ASSERT_EQ(STATUS_SUCCESS, signalingClientGetIceConfigInfo(mSignalingClientHandle, i, &pIceConfigInfo));
+        for (UINT32 j = 0; j < pIceConfigInfo->uriCount; j++) {
+            STRNCPY(turnServers[uriCount].urls, pIceConfigInfo->uris[j], MAX_ICE_CONFIG_URI_LEN);
+            STRNCPY(turnServers[uriCount].credential, pIceConfigInfo->password, MAX_ICE_CONFIG_CREDENTIAL_LEN);
+            STRNCPY(turnServers[uriCount].username, pIceConfigInfo->userName, MAX_ICE_CONFIG_USER_NAME_LEN);
+            uriCount++;
+        }
+    }
+    ASSERT_TRUE(uriCount > 0);
+
+    // Should fail because ICE agent is in FAILED state
+    EXPECT_EQ(STATUS_INVALID_OPERATION, peerConnectionUpdateIceServers(offerPc, turnServers, uriCount));
+    EXPECT_EQ(STATUS_INVALID_OPERATION, peerConnectionUpdateIceServers(answerPc, turnServers, uriCount));
+
+    closePeerConnection(offerPc);
+    closePeerConnection(answerPc);
+
+    freePeerConnection(&offerPc);
+    freePeerConnection(&answerPc);
+
+    deinitializeSignalingClient();
+}
+
+// Verify that dynamically adding TURN servers from a background thread
+// 5 seconds after connectTwoPeers is called allows the connection to succeed
+TEST_F(PeerConnectionFunctionalityTest, connectTwoPeersForcedTURNWithDelayedDynamicIceServers)
+{
+    ASSERT_EQ(TRUE, mAccessKeyIdSet);
+
+    RtcConfiguration offerConfig, answerConfig;
+    PRtcPeerConnection offerPc = NULL, answerPc = NULL;
+    UINT32 i, uriCount = 0, iceConfigCount;
+    PIceConfigInfo pIceConfigInfo;
+    RtcIceServer turnServers[MAX_ICE_SERVERS_COUNT];
+    UINT32 addTurnServerDelaySec = 5;
+
+    ASSERT_TRUE(addTurnServerDelaySec < KVS_ICE_GATHER_REFLEXIVE_AND_RELAYED_CANDIDATE_TIMEOUT);
+
+    initializeSignalingClient();
+
+    // Use ALL policy on one side to have the ICE agent finish gathering Host+STUN candidates
+    // This should validate that additional gathering can still be done after the fact
+    MEMSET(&offerConfig, 0x00, SIZEOF(RtcConfiguration));
+    offerConfig.iceTransportPolicy = ICE_TRANSPORT_POLICY_ALL;
+    SNPRINTF(offerConfig.iceServers[0].urls, MAX_ICE_CONFIG_URI_LEN, KINESIS_VIDEO_STUN_URL, TEST_DEFAULT_REGION, TEST_DEFAULT_STUN_URL_POSTFIX);
+
+    // Create PC with relay-only policy to verify TURN connection is used
+    MEMSET(&answerConfig, 0x00, SIZEOF(RtcConfiguration));
+    answerConfig.iceTransportPolicy = ICE_TRANSPORT_POLICY_RELAY;
+    SNPRINTF(answerConfig.iceServers[0].urls, MAX_ICE_CONFIG_URI_LEN, KINESIS_VIDEO_STUN_URL, TEST_DEFAULT_REGION, TEST_DEFAULT_STUN_URL_POSTFIX);
+
+    EXPECT_EQ(STATUS_SUCCESS, createPeerConnection(&offerConfig, &offerPc));
+    EXPECT_EQ(STATUS_SUCCESS, createPeerConnection(&answerConfig, &answerPc));
+
+    // Extract TURN servers from signaling
+    MEMSET(turnServers, 0x00, SIZEOF(turnServers));
+    ASSERT_EQ(STATUS_SUCCESS, signalingClientGetIceConfigInfoCount(mSignalingClientHandle, &iceConfigCount));
+    for (uriCount = 0, i = 0; i < iceConfigCount; i++) {
+        ASSERT_EQ(STATUS_SUCCESS, signalingClientGetIceConfigInfo(mSignalingClientHandle, i, &pIceConfigInfo));
+        for (UINT32 j = 0; j < pIceConfigInfo->uriCount; j++) {
+            STRNCPY(turnServers[uriCount].urls, pIceConfigInfo->uris[j], MAX_ICE_CONFIG_URI_LEN);
+            STRNCPY(turnServers[uriCount].credential, pIceConfigInfo->password, MAX_ICE_CONFIG_CREDENTIAL_LEN);
+            STRNCPY(turnServers[uriCount].username, pIceConfigInfo->userName, MAX_ICE_CONFIG_USER_NAME_LEN);
+            uriCount++;
+        }
+    }
+    ASSERT_TRUE(uriCount > 0);
+
+    // Launch background thread that waits 5 seconds then adds TURN servers
+    std::thread updateThread([offerPc, answerPc, &turnServers, uriCount, addTurnServerDelaySec]() {
+        DLOGI("Wait %ds to add TURN servers", addTurnServerDelaySec);
+        THREAD_SLEEP(addTurnServerDelaySec * HUNDREDS_OF_NANOS_IN_A_SECOND);
+        DLOGI("Adding TURN servers now");
+        EXPECT_EQ(STATUS_SUCCESS, peerConnectionUpdateIceServers(offerPc, turnServers, uriCount));
+        EXPECT_EQ(STATUS_SUCCESS, peerConnectionUpdateIceServers(answerPc, turnServers, uriCount));
+    });
+
+    // connectTwoPeers polls for up to 100s, TURN servers arrive after 5s
+    EXPECT_EQ(TRUE, connectTwoPeers(offerPc, answerPc));
+
+    updateThread.join();
+
+    closePeerConnection(offerPc);
+    closePeerConnection(answerPc);
+
+    freePeerConnection(&offerPc);
+    freePeerConnection(&answerPc);
+
+    deinitializeSignalingClient();
+}
+
+// Verify that writeFrame only adds TWCC header extension on transceivers with twccEnabled=TRUE
+TEST_F(PeerConnectionFunctionalityTest, twccHeaderOnlyOnEnabledTransceivers)
+{
+    auto const frameBufferSize = 200000;
+
+    RtcConfiguration configuration;
+    PRtcPeerConnection offerPc = NULL, answerPc = NULL;
+    RtcMediaStreamTrack offerVideoTrack, answerVideoTrack, offerAudioTrack, answerAudioTrack;
+    PRtcRtpTransceiver offerVideoTransceiver, answerVideoTransceiver, offerAudioTransceiver, answerAudioTransceiver;
+    SIZE_T seenVideo = 0;
+    Frame videoFrame, audioFrame;
+
+    MEMSET(&configuration, 0x00, SIZEOF(RtcConfiguration));
+    MEMSET(&videoFrame, 0x00, SIZEOF(Frame));
+    MEMSET(&audioFrame, 0x00, SIZEOF(Frame));
+
+    videoFrame.frameData = (PBYTE) MEMALLOC(frameBufferSize);
+    videoFrame.size = TEST_VIDEO_FRAME_SIZE;
+    MEMSET(videoFrame.frameData, 0x11, videoFrame.size);
+
+    audioFrame.frameData = (PBYTE) MEMALLOC(frameBufferSize);
+    audioFrame.size = 160; // small audio frame
+    MEMSET(audioFrame.frameData, 0x22, audioFrame.size);
+
+    EXPECT_EQ(createPeerConnection(&configuration, &offerPc), STATUS_SUCCESS);
+    EXPECT_EQ(createPeerConnection(&configuration, &answerPc), STATUS_SUCCESS);
+
+    addTrackToPeerConnection(offerPc, &offerVideoTrack, &offerVideoTransceiver, RTC_CODEC_VP8, MEDIA_STREAM_TRACK_KIND_VIDEO);
+    addTrackToPeerConnection(offerPc, &offerAudioTrack, &offerAudioTransceiver, RTC_CODEC_OPUS, MEDIA_STREAM_TRACK_KIND_AUDIO);
+    addTrackToPeerConnection(answerPc, &answerVideoTrack, &answerVideoTransceiver, RTC_CODEC_VP8, MEDIA_STREAM_TRACK_KIND_VIDEO);
+    addTrackToPeerConnection(answerPc, &answerAudioTrack, &answerAudioTransceiver, RTC_CODEC_OPUS, MEDIA_STREAM_TRACK_KIND_AUDIO);
+
+    auto onFrameHandler = [](UINT64 customData, PFrame pFrame) -> void {
+        UNUSED_PARAM(pFrame);
+        ATOMIC_STORE((PSIZE_T) customData, 1);
+    };
+    EXPECT_EQ(transceiverOnFrame(answerVideoTransceiver, (UINT64) &seenVideo, onFrameHandler), STATUS_SUCCESS);
+
+    EXPECT_EQ(connectTwoPeers(offerPc, answerPc), TRUE);
+
+    // After connection, simulate Firefox scenario: disable TWCC on audio transceiver
+    PKvsRtpTransceiver pKvsOfferAudioTransceiver = (PKvsRtpTransceiver) offerAudioTransceiver;
+    PKvsRtpTransceiver pKvsOfferVideoTransceiver = (PKvsRtpTransceiver) offerVideoTransceiver;
+    pKvsOfferAudioTransceiver->twccEnabled = FALSE;
+    pKvsOfferVideoTransceiver->twccEnabled = TRUE;
+
+    PKvsPeerConnection pKvsOfferPc = (PKvsPeerConnection) offerPc;
+    SIZE_T twccSeqBefore = ATOMIC_LOAD(&pKvsOfferPc->transportWideSequenceNumber);
+
+    // Send audio frames - should NOT increment transportWideSequenceNumber
+    for (int i = 0; i < 5; i++) {
+        writeFrame(offerAudioTransceiver, &audioFrame);
+        audioFrame.presentationTs += (HUNDREDS_OF_NANOS_IN_A_SECOND / 50);
+    }
+
+    SIZE_T twccSeqAfterAudio = ATOMIC_LOAD(&pKvsOfferPc->transportWideSequenceNumber);
+    EXPECT_EQ(twccSeqBefore, twccSeqAfterAudio);
+
+    // Send video frames - SHOULD increment transportWideSequenceNumber
+    for (int i = 0; i < 3; i++) {
+        writeFrame(offerVideoTransceiver, &videoFrame);
+        videoFrame.presentationTs += (HUNDREDS_OF_NANOS_IN_A_SECOND / 25);
+        THREAD_SLEEP(HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
+    }
+
+    SIZE_T twccSeqAfterVideo = ATOMIC_LOAD(&pKvsOfferPc->transportWideSequenceNumber);
+    EXPECT_LT(twccSeqAfterAudio, twccSeqAfterVideo);
+
+    MEMFREE(videoFrame.frameData);
+    MEMFREE(audioFrame.frameData);
+
+    closePeerConnection(offerPc);
+    closePeerConnection(answerPc);
+
+    freePeerConnection(&offerPc);
+    freePeerConnection(&answerPc);
+}
+
+TEST_F(PeerConnectionFunctionalityTest, parseExtIdHandlesNull)
+{
+    // NULL input must return 0
+    EXPECT_EQ(0u, parseExtId(NULL));
+
+    // String without a space should return 0
+    EXPECT_EQ(0u, parseExtId((PCHAR) "noSpace"));
+
+    // Valid extmap value: "$number $url"
+    EXPECT_EQ(5u, parseExtId((PCHAR) "5 http://example.com"));
+    EXPECT_EQ(12u, parseExtId((PCHAR) "12 urn:ietf:params"));
+}
+
 } // namespace webrtcclient
 } // namespace video
 } // namespace kinesis

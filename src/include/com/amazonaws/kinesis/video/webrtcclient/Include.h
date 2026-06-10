@@ -1198,6 +1198,66 @@ typedef VOID (*RtcOnBandwidthEstimation)(UINT64, DOUBLE);
 typedef VOID (*RtcOnSenderBandwidthEstimation)(UINT64, UINT32, UINT32, UINT32, UINT32, UINT64);
 
 /**
+ * @brief Per-packet feedback from a TWCC report.
+ *
+ * NOTE: sendTime and recvTime use different unsynchronized clocks
+ * (local sender clock vs. remote receiver clock).
+ * These values are meaningful for computing inter-packet deltas
+ * (e.g., one-way delay variation). Do NOT use them to calculate RTT.
+ */
+typedef struct {
+    UINT16 twccSeqNum; //!< Transport-wide sequence number
+    UINT64 sendTime;   //!< RTP packet send time in hundreds of nanos (local clock)
+    UINT64 recvTime;   //!< RTP packet reported receive time in hundreds of nanos (remote clock, reconstructed)
+    UINT32 packetSize; //!< Size of the packet sent (bytes)
+} TwccFeedback, *PTwccFeedback;
+
+/**
+ * @brief Congestion state output from the trendline estimator.
+ */
+typedef struct {
+    DOUBLE delayTrend; //!< Smoothed slope of accumulated delay variation (ms).
+                       //!<   >0: congestion building
+                       //!<   ~0: stable
+                       //!<   <0: congestion clearing
+} TwccCongestionState, *PTwccCongestionState;
+
+/**
+ * @brief Context provided to the bandwidth controller callback.
+ */
+typedef struct {
+    UINT64 txBytes;                      //!< Bytes sent over the transport
+    UINT64 rxBytes;                      //!< Bytes reported as received
+    UINT64 txPackets;                    //!< Packets sent over the transport
+    UINT64 rxPackets;                    //!< Packets reported as received
+    UINT64 duration;                     //!< Time window for this feedback (hundreds of nanos)
+    TwccCongestionState congestionState; //!< Current congestion state
+} CongestionCtx, *PCongestionCtx;
+
+/**
+ * @brief Called when new TWCC feedback is available from the remote peer.
+ * Updates the current network congestion state with latest data.
+ * The SDK provides a default implementation; set a custom callback to override.
+ *
+ * @param[in] UINT64 customData - User customData
+ * @param[in] PTwccFeedback twccFeedbackList - batch of per-packet feedback
+ * @param[in] UINT32 twccFeedbackListLen - length of the list
+ * @param[in,out] PTwccCongestionState pCongestionState - congestion state to update
+ *
+ * @return STATUS code of the execution. STATUS_SUCCESS on success
+ */
+typedef STATUS (*RtcOnTwccFeedbackReceived)(UINT64, PTwccFeedback, UINT32, PTwccCongestionState);
+
+/**
+ * @brief Called when the SDK has computed congestion context from TWCC feedback.
+ * The application uses this to make bandwidth decisions and adjust encoder parameters.
+ *
+ * @param[in] UINT64 customData - User customData
+ * @param[in] PCongestionCtx congestionContext - latest feedback context
+ */
+typedef STATUS (*RtcOnPeerCongestionFeedback)(UINT64, PCongestionCtx);
+
+/**
  * @brief RtcOnPictureLoss is fired everytime a Picture Loss Indication (PLI)
  * feedback message is received. Receiving such message normally indicates that
  * you sent a video frame which receiver could not decode.
@@ -1857,6 +1917,31 @@ PUBLIC_API STATUS peerConnectionOnIceCandidate(PRtcPeerConnection, UINT64, RtcOn
 PUBLIC_API STATUS peerConnectionOnSenderBandwidthEstimation(PRtcPeerConnection, UINT64, RtcOnSenderBandwidthEstimation);
 
 /**
+ * @brief Configure a custom TWCC feedback received callback.
+ * When TWCC feedback arrives from the remote peer, this callback is invoked to update the congestion state.
+ * If not set, the SDK uses a default EMA-smoothed least-squares trendline estimator.
+ *
+ * @param[in] PRtcPeerConnection Initialized RtcPeerConnection
+ * @param[in] UINT64 User customData that will be passed along when the callback is called
+ * @param[in] RtcOnTwccFeedbackReceived User callback
+ *
+ * @return STATUS code of the execution. STATUS_SUCCESS on success
+ */
+PUBLIC_API STATUS setOnTwccFeedbackReceived(PRtcPeerConnection, UINT64, RtcOnTwccFeedbackReceived);
+
+/**
+ * @brief Configure a callback invoked when the SDK has congestion context ready for the application.
+ * The application uses this to adjust encoder bitrate or other media parameters.
+ *
+ * @param[in] PRtcPeerConnection Initialized RtcPeerConnection
+ * @param[in] UINT64 User customData that will be passed along when the callback is called
+ * @param[in] RtcOnPeerCongestionFeedback User callback
+ *
+ * @return STATUS code of the execution. STATUS_SUCCESS on success
+ */
+PUBLIC_API STATUS setOnPeerCongestionFeedbackFn(PRtcPeerConnection, UINT64, RtcOnPeerCongestionFeedback);
+
+/**
  * Set a callback for data channel
  *
  * @param[in] PRtcPeerConnection Initialized RtcPeerConnection
@@ -2020,6 +2105,21 @@ PUBLIC_API STATUS restartIce(PRtcPeerConnection);
 PUBLIC_API STATUS closePeerConnection(PRtcPeerConnection);
 
 /**
+ * @brief Dynamically update the ICE servers for an existing peer connection
+ *
+ * This function allows adding new ICE servers to an already created peer connection.
+ * New TURN servers will have relay candidates created automatically, enabling
+ * progressive ICE server delivery for improved connection establishment performance.
+ *
+ * @param[in] PRtcPeerConnection Initialized RtcPeerConnection
+ * @param[in] PRtcIceServer Array of new ICE servers to add
+ * @param[in] UINT32 Number of ICE servers in the array
+ *
+ * @return STATUS code of the execution. STATUS_SUCCESS on success
+ */
+PUBLIC_API STATUS peerConnectionUpdateIceServers(PRtcPeerConnection, PRtcIceServer, UINT32);
+
+/**
  * @brief Create a new RtcRtpTransceiver and add it to the set of transceivers.
  *
  * Reference https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-addtransceiver
@@ -2065,6 +2165,23 @@ PUBLIC_API STATUS transceiverOnBandwidthEstimation(PRtcRtpTransceiver, UINT64, R
  * @return STATUS code of the execution. STATUS_SUCCESS on success
  */
 PUBLIC_API STATUS transceiverOnPictureLoss(PRtcRtpTransceiver, UINT64, RtcOnPictureLoss);
+
+/**
+ * @brief Override the H264 fmtp string advertised in SDP offers and answers for this transceiver.
+ *
+ * By default the SDK advertises a Baseline-profile fmtp (DEFAULT_H264_FMTP). Use this to pin a
+ * different fmtp (for example, a different profile-level-id) when the local encoder/decoder
+ * requires it. Pass NULL or an empty string to clear the override and fall back to the default.
+ *
+ * Only applied to H264 (RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_MODE);
+ * ignored for other codecs.
+ *
+ * @param[in] PRtcRtpTransceiver Transceiver returned from addTransceiver()
+ * @param[in] PCHAR Null-terminated fmtp string (without the "a=fmtp:<pt> " prefix), or NULL to clear
+ *
+ * @return STATUS code of the execution. STATUS_SUCCESS on success
+ */
+PUBLIC_API STATUS transceiverSetFmtp(PRtcRtpTransceiver, PCHAR);
 
 /**
  * @brief Frees the previously created transceiver object

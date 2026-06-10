@@ -82,6 +82,11 @@ typedef struct {
     RtcOutboundRtpStreamStats outboundStats;
     RtcRemoteInboundRtpStreamStats remoteInboundStats;
     RtcInboundRtpStreamStats inboundStats;
+
+    BOOL twccEnabled; // whether TWCC was negotiated for this transceiver's m-line
+
+    // Caller-supplied fmtp override (H264 only). Empty string means "use the default".
+    CHAR fmtpOverride[MAX_SDP_ATTRIBUTE_VALUE_LENGTH + 1];
 } KvsRtpTransceiver, *PKvsRtpTransceiver;
 
 STATUS createKvsRtpTransceiver(RTC_RTP_TRANSCEIVER_DIRECTION, PKvsPeerConnection, UINT32, UINT32, PRtcMediaStreamTrack, PJitterBuffer, RTC_CODEC,

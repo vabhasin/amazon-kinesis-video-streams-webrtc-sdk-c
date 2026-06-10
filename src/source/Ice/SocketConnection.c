@@ -44,10 +44,6 @@ STATUS createSocketConnection(KVS_IP_FAMILY_TYPE familyType, KVS_SOCKET_PROTOCOL
     pSocketConnection->dataAvailableCallbackCustomData = customData;
     pSocketConnection->dataAvailableCallbackFn = dataAvailableFn;
 
-CleanUp:
-
-    CHK_LOG_ERR(retStatus);
-
     if (pBindAddr) {
         getIpAddrStr(pBindAddr, ipAddr, ARRAY_SIZE(ipAddr));
         DLOGD("create socket id: %d, with ip: %s:%u. family:%d", pSocketConnection->localSocket, ipAddr, (UINT16) getInt16(pBindAddr->port),
@@ -59,6 +55,10 @@ CleanUp:
         getIpAddrStr(pPeerIpAddr, ipAddr, ARRAY_SIZE(ipAddr));
         DLOGD("tcp socket connected with ip: %s:%u. family:%d", ipAddr, (UINT16) getInt16(pPeerIpAddr->port), pPeerIpAddr->family);
     }
+
+CleanUp:
+
+    CHK_LOG_ERR(retStatus);
 
     if (STATUS_FAILED(retStatus) && pSocketConnection != NULL) {
         freeSocketConnection(&pSocketConnection);
@@ -233,6 +233,7 @@ STATUS socketConnectionInitSecureConnection(PSocketConnection pSocketConnection,
     ENTERS();
     TlsSessionCallbacks callbacks;
     DtlsSessionCallbacks dtlsCallbacks;
+    DtlsSessionOptions dtlsOptions;
     STATUS retStatus = STATUS_SUCCESS;
     PTlsSession pTlsSessionToFree = NULL;
     PDtlsSession pDtlsSessionToFree = NULL;
@@ -257,11 +258,18 @@ STATUS socketConnectionInitSecureConnection(PSocketConnection pSocketConnection,
         CHK(IS_VALID_TIMER_QUEUE_HANDLE(timerQueueHandle), STATUS_INVALID_ARG);
 
         MEMSET(&dtlsCallbacks, 0x00, SIZEOF(dtlsCallbacks));
+        MEMSET(&dtlsOptions, 0x00, SIZEOF(dtlsOptions));
         dtlsCallbacks.outBoundPacketFnCustomData = dtlsCallbacks.stateChangeFnCustomData = (UINT64) pSocketConnection;
         dtlsCallbacks.outboundPacketFn = socketConnectionDtlsSessionOutBoundPacket;
         dtlsCallbacks.stateChangeFn = socketConnectionDtlsSessionOnStateChange;
+        dtlsOptions.validationMode = DTLS_SESSION_VALIDATION_MODE_RELAXED;
+        if (pSocketConnection->hostname != NULL && pSocketConnection->hostname[0] != '\0') {
+            dtlsOptions.validationMode = DTLS_SESSION_VALIDATION_MODE_STRICT_SERVER;
+            dtlsOptions.pExpectedServerHostname = pSocketConnection->hostname;
+        }
 
-        CHK_STATUS(createDtlsSession(&dtlsCallbacks, timerQueueHandle, GENERATED_CERTIFICATE_BITS, FALSE, NULL, &pSocketConnection->pDtlsSession));
+        CHK_STATUS(createDtlsSessionWithOptions(&dtlsCallbacks, timerQueueHandle, GENERATED_CERTIFICATE_BITS, FALSE, NULL, &dtlsOptions,
+                                                &pSocketConnection->pDtlsSession));
         CHK_STATUS(dtlsSessionStart(pSocketConnection->pDtlsSession, isServer));
     }
     pSocketConnection->secureConnection = TRUE;

@@ -485,6 +485,11 @@ STATUS populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKvsRtp
     CHK(pKvsRtpTransceiver != NULL, STATUS_NULL_ARG);
     CHK(pKvsPeerConnection->isOffer || pRemoteSessionDescription != NULL, STATUS_NULL_ARG);
 
+    // Set per-transceiver TWCC flag based on whether this m-line negotiated TWCC
+    if (pKvsPeerConnection->twccExtId != 0) {
+        pKvsRtpTransceiver->twccEnabled = pKvsPeerConnection->remoteTwccOfferedPerMedia[mediaSectionId];
+    }
+
     PRtcMediaStreamTrack pRtcMediaStreamTrack = &(pKvsRtpTransceiver->sender.track);
 
     MEMSET(remoteSdpAttributeValue, 0, MAX_SDP_ATTRIBUTE_VALUE_LENGTH);
@@ -719,9 +724,16 @@ STATUS populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKvsRtp
 
     if (pRtcMediaStreamTrack->codec == RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_MODE) {
         // TODO: Need additional condition for a signaling channel with an ENABLED media storage configuration
-        if (pKvsPeerConnection->isOffer) {
-            currentFmtp = DEFAULT_H264_FMTP;
-        }
+        //
+        // Advertise our own fmtp on both offer and answer. The previous
+        // answer-path behavior echoed the peer's fmtp, which on Baseline-only
+        // decoders (e.g. tinyh264 on ESP32-P4/S3) caused the SDK to accept
+        // High/Main offers and then fail to decode the resulting stream.
+        // Per RFC 6184 §8.2.2 profile-level-id and packetization-mode are
+        // symmetric parameters; advertising them ourselves correctly reflects
+        // what we will actually send. transceiverSetFmtp() lets callers pin
+        // a different fmtp when their codec needs it.
+        currentFmtp = pKvsRtpTransceiver->fmtpOverride[0] != '\0' ? pKvsRtpTransceiver->fmtpOverride : DEFAULT_H264_FMTP;
         STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "rtpmap");
         amountWritten = SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue,
                                  SIZEOF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue), "%" PRId64 " H264/90000", payloadType);
@@ -740,13 +752,13 @@ STATUS populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKvsRtp
         CHK_ERR(amountWritten > 0, STATUS_INTERNAL_ERROR, "Full H264 rtcp-fb nack-pli value could not be written");
         attributeCount++;
 
-        // TODO: If level asymmetry is allowed, consider sending back DEFAULT_H264_FMTP instead of the received fmtp value.
         if (currentFmtp != NULL) {
             STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "fmtp");
             amountWritten =
                 SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue,
                          SIZEOF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue), "%" PRId64 " %s", payloadType, currentFmtp);
             CHK_ERR(amountWritten > 0, STATUS_INTERNAL_ERROR, "Full H264 fmtp value could not be written");
+            DLOGI("H264 fmtp advertised in %s: pt=%" PRId64 " %s", pKvsPeerConnection->isOffer ? "offer" : "answer", payloadType, currentFmtp);
             attributeCount++;
         }
 
@@ -896,12 +908,19 @@ STATUS populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKvsRtp
     CHK_ERR(amountWritten > 0, STATUS_INTERNAL_ERROR, "Full rtcp-fb goog-remb could not be written");
     attributeCount++;
 
-    if (pKvsPeerConnection->twccExtId != 0) {
+    if (pKvsPeerConnection->twccExtId != 0 && pKvsPeerConnection->remoteTwccOfferedPerMedia[mediaSectionId]) {
         STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "rtcp-fb");
         amountWritten =
             SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue,
                      SIZEOF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue), "%" PRId64 " " TWCC_SDP_ATTR, payloadType);
         CHK_ERR(amountWritten > 0, STATUS_INTERNAL_ERROR, "Full rtcp-fb twcc could not be written");
+        attributeCount++;
+
+        STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "extmap");
+        amountWritten = SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue,
+                                 SIZEOF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue), "%u %s", pKvsPeerConnection->twccExtId,
+                                 TWCC_EXT_URL);
+        CHK_ERR(amountWritten > 0, STATUS_INTERNAL_ERROR, "Full extmap twcc could not be written");
         attributeCount++;
     }
 
@@ -1319,7 +1338,7 @@ STATUS writeTransceiverDirection(PCHAR buf, UINT32 len, RTC_RTP_TRANSCEIVER_DIRE
     CHK(amountWouldHaveWritten < len, STATUS_BUFFER_TOO_SMALL);
 
 CleanUp:
-    if (STATUS_FAILED(retStatus) && buf != NULL & len > 0) {
+    if (STATUS_FAILED(retStatus) && buf != NULL && len > 0) {
         buf[0] = '\0';
     }
 
@@ -1418,6 +1437,14 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
                 attributeValue = end + 1;
             }
         } while (end != NULL && !foundMediaSectionWithCodec);
+
+        // If codecs is NULL, the m-line had no payload types (e.g., "m=audio 9 UDP/TLS/RTP/SAVPF" with nothing after the protocol).
+        // There is no first payload type to extract for a fake transceiver, so skip this media section.
+        if (codecs == NULL) {
+            DLOGW("No payload types found in m-line, skipping media section %u", currentMedia);
+            continue;
+        }
+
         // get the first payload type from codecs in case we need to use it to generate a fake transceiver to respond to an m-line
         // if we don't have a user-created one corresponding to an m-line
         // we can respond to an m-line by including any one codec the offer had
@@ -1536,6 +1563,7 @@ STATUS deserializeRtcIceCandidateInit(PCHAR pJson, UINT32 jsonLen, PRtcIceCandid
 
     for (i = 1; i < (tokenCount - 1); i += 2) {
         if (STRNCMP(CANDIDATE_KEY, pJson + tokens[i].start, ARRAY_SIZE(CANDIDATE_KEY) - 1) == 0) {
+            CHK((tokens[i + 1].end - tokens[i + 1].start) <= MAX_ICE_CANDIDATE_INIT_CANDIDATE_LEN, STATUS_ICE_CANDIDATE_INIT_MALFORMED);
             STRNCPY(pRtcIceCandidateInit->candidate, pJson + tokens[i + 1].start, (tokens[i + 1].end - tokens[i + 1].start));
         }
     }

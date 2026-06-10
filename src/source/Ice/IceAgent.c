@@ -322,6 +322,128 @@ CleanUp:
     return retStatus;
 }
 
+STATUS iceAgentAddIceServers(PIceAgent pIceAgent, PRtcIceServer pIceServers, UINT32 iceServersCount)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    UINT32 i, j, originalCount;
+    UINT32 newIndex, newTurnCount = 0;
+    BOOL locked = FALSE;
+    BOOL isDuplicate;
+    BOOL isIPv6TurnDisabled, isIPv4TurnDisabled;
+
+    CHK(pIceAgent != NULL && pIceServers != NULL, STATUS_NULL_ARG);
+    CHK(iceServersCount > 0, STATUS_INVALID_ARG);
+    CHK(!ATOMIC_LOAD_BOOL(&pIceAgent->shutdown), STATUS_INVALID_OPERATION);
+
+    DLOGI("Adding %u new ICE servers to existing agent", iceServersCount);
+
+    MUTEX_LOCK(pIceAgent->lock);
+    locked = TRUE;
+
+    /* Read iceAgentState under the lock — state-machine executors
+     * (e.g. executeCheckConnectionIceAgentState) mutate it from the
+     * timer thread under the same lock. */
+    CHK(pIceAgent->iceAgentState != ICE_AGENT_STATE_FAILED, STATUS_INVALID_OPERATION);
+
+    originalCount = pIceAgent->iceServersCount;
+
+    // Check if we have space for new ICE servers
+    CHK_ERR(originalCount + iceServersCount <= MAX_ICE_SERVERS_COUNT, STATUS_INVALID_ARG,
+            "Cannot add %u ICE servers, would exceed maximum of %u (current: %u)", iceServersCount, MAX_ICE_SERVERS_COUNT, originalCount);
+
+    // Add new ICE servers to the agent
+    for (i = 0; i < iceServersCount; i++) {
+        if (pIceServers[i].urls[0] != '\0') {
+            newIndex = pIceAgent->iceServersCount;
+
+            // Check for duplicates (optional optimization)
+            isDuplicate = FALSE;
+            for (j = 0; j < originalCount; j++) {
+                if (STRNCMP(pIceAgent->iceServers[j].url, pIceServers[i].urls, MAX_ICE_CONFIG_URI_LEN) == 0) {
+                    isDuplicate = TRUE;
+                    DLOGD("Skipping duplicate ICE server: %s", pIceServers[i].urls);
+                    break;
+                }
+            }
+
+            if (!isDuplicate) {
+                // Set up callback for STUN servers
+                if (STRSTR(pIceServers[i].urls, "stun")) {
+                    pIceAgent->iceServers[newIndex].setIpFn = pIceAgent->iceAgentCallbacks.setStunServerIpFn;
+                } else {
+                    pIceAgent->iceServers[newIndex].setIpFn = NULL;
+                }
+
+                // Parse and add the new ICE server
+                retStatus = parseIceServer(&pIceAgent->iceServers[newIndex], (PCHAR) pIceServers[i].urls, (PCHAR) pIceServers[i].username,
+                                           (PCHAR) pIceServers[i].credential);
+                if (STATUS_SUCCEEDED(retStatus)) {
+                    pIceAgent->iceServersCount++;
+                    DLOGI("Successfully added ICE server: %s (index: %u)", pIceServers[i].urls, newIndex);
+                } else {
+                    DLOGW("Failed to parse ICE server: %s, error: 0x%08x", pIceServers[i].urls, retStatus);
+                    // Continue with other servers
+                    retStatus = STATUS_SUCCESS;
+                }
+            }
+        }
+    }
+
+    MUTEX_UNLOCK(pIceAgent->lock);
+    locked = FALSE;
+
+    // Initialize relay candidates for any new TURN servers
+    // This happens outside the lock to avoid deadlocks with candidate gathering
+    isIPv6TurnDisabled = isEnvVarEnabled(DISABLE_IPV6_TURN_ENV_VAR);
+    isIPv4TurnDisabled = isEnvVarEnabled(DISABLE_IPV4_TURN_ENV_VAR);
+    for (i = originalCount; i < pIceAgent->iceServersCount; i++) {
+        if (pIceAgent->iceServers[i].isTurn) {
+            newTurnCount++;
+            DLOGI("Initializing relay candidates for new TURN server: %s", pIceAgent->iceServers[i].url);
+
+            if (!isIPv6TurnDisabled && pIceAgent->iceServers[i].ipAddresses.ipv6Address.family != KVS_IP_FAMILY_TYPE_NOT_SET) {
+                if (pIceAgent->iceServers[i].transport == KVS_SOCKET_PROTOCOL_UDP || pIceAgent->iceServers[i].transport == KVS_SOCKET_PROTOCOL_NONE) {
+                    if (iceAgentInitRelayCandidate(pIceAgent, i, KVS_SOCKET_PROTOCOL_UDP, KVS_IP_FAMILY_TYPE_IPV6) != STATUS_SUCCESS) {
+                        DLOGW("Failed to initialize IPv6 UDP relay candidate for server %u", i);
+                    }
+                }
+
+                if (pIceAgent->iceServers[i].transport == KVS_SOCKET_PROTOCOL_TCP || pIceAgent->iceServers[i].transport == KVS_SOCKET_PROTOCOL_NONE) {
+                    if (iceAgentInitRelayCandidate(pIceAgent, i, KVS_SOCKET_PROTOCOL_TCP, KVS_IP_FAMILY_TYPE_IPV6) != STATUS_SUCCESS) {
+                        DLOGW("Failed to initialize IPv6 TCP relay candidate for server %u", i);
+                    }
+                }
+            }
+
+            if (!isIPv4TurnDisabled && pIceAgent->iceServers[i].ipAddresses.ipv4Address.family != KVS_IP_FAMILY_TYPE_NOT_SET) {
+                if (pIceAgent->iceServers[i].transport == KVS_SOCKET_PROTOCOL_UDP || pIceAgent->iceServers[i].transport == KVS_SOCKET_PROTOCOL_NONE) {
+                    if (iceAgentInitRelayCandidate(pIceAgent, i, KVS_SOCKET_PROTOCOL_UDP, KVS_IP_FAMILY_TYPE_IPV4) != STATUS_SUCCESS) {
+                        DLOGW("Failed to initialize IPv4 UDP relay candidate for server %u", i);
+                    }
+                }
+
+                if (pIceAgent->iceServers[i].transport == KVS_SOCKET_PROTOCOL_TCP || pIceAgent->iceServers[i].transport == KVS_SOCKET_PROTOCOL_NONE) {
+                    if (iceAgentInitRelayCandidate(pIceAgent, i, KVS_SOCKET_PROTOCOL_TCP, KVS_IP_FAMILY_TYPE_IPV4) != STATUS_SUCCESS) {
+                        DLOGW("Failed to initialize IPv4 TCP relay candidate for server %u", i);
+                    }
+                }
+            }
+        }
+    }
+
+    DLOGI("Dynamic ICE server update completed: added %u servers (%u TURN)", pIceAgent->iceServersCount - originalCount, newTurnCount);
+
+CleanUp:
+    if (locked) {
+        MUTEX_UNLOCK(pIceAgent->lock);
+    }
+
+    CHK_LOG_ERR(retStatus);
+    LEAVES();
+    return retStatus;
+}
+
 STATUS iceAgentValidateKvsRtcConfig(PKvsRtcConfiguration pKvsRtcConfiguration)
 {
     STATUS retStatus = STATUS_SUCCESS;
@@ -621,7 +743,8 @@ STATUS iceAgentStartAgent(PIceAgent pIceAgent, PCHAR remoteUsername, PCHAR remot
         STATUS_INVALID_ARG);
 
     MUTEX_LOCK(pIceAgent->lock);
-    locked = TRUE;
+    // Not currently used since no jumps to CleanUp between lock/unlock.
+    // locked = TRUE;
 
     ATOMIC_STORE_BOOL(&pIceAgent->remoteCredentialReceived, TRUE);
     /* role should not change during ice restart. */
@@ -637,7 +760,8 @@ STATUS iceAgentStartAgent(PIceAgent pIceAgent, PCHAR remoteUsername, PCHAR remot
     SNPRINTF(pIceAgent->combinedUserName, ARRAY_SIZE(pIceAgent->combinedUserName), "%s:%s", pIceAgent->remoteUsername, pIceAgent->localUsername);
 
     MUTEX_UNLOCK(pIceAgent->lock);
-    locked = FALSE;
+    // Not currently used since no jumps to CleanUp between lock/unlock.
+    // locked = FALSE;
 
     CHK_STATUS(timerQueueAddTimer(pIceAgent->timerQueueHandle, KVS_ICE_DEFAULT_TIMER_START_DELAY,
                                   pIceAgent->kvsRtcConfiguration.iceConnectionCheckPollingInterval, iceAgentStateTransitionTimerCallback,
@@ -1908,6 +2032,12 @@ STATUS iceAgentInitSrflxCandidate(PIceAgent pIceAgent)
         CHK_STATUS(createSocketConnection(pCandidate->ipAddress.family, KVS_SOCKET_PROTOCOL_UDP, &pCandidate->ipAddress,
                                           pIceServer->scheme == ICE_SERVER_SCHEME_STUNS ? pStunServerAddress : NULL, (UINT64) pIceAgent,
                                           incomingDataHandler, pIceAgent->kvsRtcConfiguration.sendBufSize, &pCandidate->pSocketConnection));
+        if (pIceServer->scheme == ICE_SERVER_SCHEME_STUNS) {
+            UINT32 hostnameLen = (UINT32) STRLEN(pIceServer->url);
+            pCandidate->pSocketConnection->hostname = (PCHAR) MEMCALLOC(1, hostnameLen + 1);
+            CHK(pCandidate->pSocketConnection->hostname != NULL, STATUS_NOT_ENOUGH_MEMORY);
+            STRNCPY(pCandidate->pSocketConnection->hostname, pIceServer->url, hostnameLen);
+        }
         ATOMIC_STORE_BOOL(&pCandidate->pSocketConnection->receiveData, TRUE);
         // connectionListener will free the pSocketConnection at the end.
         CHK_STATUS(connectionListenerAddConnection(pIceAgent->pConnectionListener, pCandidate->pSocketConnection));
@@ -2251,7 +2381,8 @@ STATUS iceAgentConnectedStateSetup(PIceAgent pIceAgent)
     CHK(pIceAgent != NULL, STATUS_NULL_ARG);
     if (pIceAgent->pDataSendingIceCandidatePair != NULL) {
         MUTEX_LOCK(pIceAgent->lock);
-        locked = TRUE;
+        // Not currently used since no jumps to CleanUp between lock/unlock.
+        // locked = TRUE;
 
         /* at this point ice restart is complete */
         ATOMIC_STORE_BOOL(&pIceAgent->restart, FALSE);
@@ -2259,7 +2390,8 @@ STATUS iceAgentConnectedStateSetup(PIceAgent pIceAgent)
         pIceAgent->pDataSendingIceCandidatePair = NULL;
 
         MUTEX_UNLOCK(pIceAgent->lock);
-        locked = FALSE;
+        // Not currently used since no jumps to CleanUp between lock/unlock.
+        // locked = FALSE;
 
         /* If pDataSendingIceCandidatePair is not NULL, then it must be the data sending pair before ice restart.
          * Free its resource here since not there is a new connected pair to replace it. */
@@ -2583,11 +2715,13 @@ STATUS incomingDataHandler(UINT64 customData, PSocketConnection pSocketConnectio
         // release lock early
 
         MUTEX_UNLOCK(pIceAgent->lock);
-        locked = FALSE;
+        // Not currently used since inboundPacketFn returns VOID. No jumps to CleanUp.
+        // locked = FALSE;
         pIceAgent->iceAgentCallbacks.inboundPacketFn(pIceAgent->iceAgentCallbacks.customData, pBuffer, bufferLen);
 
         MUTEX_LOCK(pIceAgent->lock);
-        locked = TRUE;
+        // Not currently used since inboundPacketFn returns VOID. No jumps to CleanUp.
+        // locked = TRUE;
         addrLen = IS_IPV4_ADDR(pSrc) ? IPV4_ADDRESS_LENGTH : IPV6_ADDRESS_LENGTH;
         if (pIceAgent->pDataSendingIceCandidatePair != NULL &&
             pIceAgent->pDataSendingIceCandidatePair->local->pSocketConnection == pSocketConnection &&

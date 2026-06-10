@@ -643,6 +643,7 @@ VOID onSctpSessionDataChannelOpen(UINT64 customData, UINT32 channelId, PBYTE pNa
     PKvsDataChannel pKvsDataChannel = NULL;
 
     CHK(pKvsPeerConnection != NULL && pKvsPeerConnection->onDataChannel != NULL, STATUS_NULL_ARG);
+    CHK(nameLen <= MAX_DATA_CHANNEL_NAME_LEN, STATUS_INVALID_ARG);
 
     pKvsDataChannel = (PKvsDataChannel) MEMCALLOC(1, SIZEOF(KvsDataChannel));
     CHK(pKvsDataChannel != NULL, STATUS_NOT_ENOUGH_MEMORY);
@@ -652,7 +653,6 @@ VOID onSctpSessionDataChannelOpen(UINT64 customData, UINT32 channelId, PBYTE pNa
     pKvsDataChannel->pRtcPeerConnection = (PRtcPeerConnection) pKvsPeerConnection;
     pKvsDataChannel->channelId = channelId;
 
-    // Set the data channel parameters when data channel is created by peer
     pKvsDataChannel->rtcDataChannelDiagnostics.dataChannelIdentifier = channelId;
     pKvsDataChannel->rtcDataChannelDiagnostics.state = RTC_DATA_CHANNEL_STATE_OPEN;
     STRNCPY(pKvsDataChannel->rtcDataChannelDiagnostics.label, (PCHAR) pName, nameLen);
@@ -660,6 +660,9 @@ VOID onSctpSessionDataChannelOpen(UINT64 customData, UINT32 channelId, PBYTE pNa
     pKvsPeerConnection->onDataChannel(pKvsPeerConnection->onDataChannelCustomData, &(pKvsDataChannel->dataChannel));
 
 CleanUp:
+    if (STATUS_FAILED(retStatus)) {
+        SAFE_MEMFREE(pKvsDataChannel);
+    }
     CHK_LOG_ERR(retStatus);
 
     LEAVES();
@@ -1039,7 +1042,9 @@ STATUS createPeerConnection(PRtcConfiguration pConfiguration, PRtcPeerConnection
     iceAgentCallbacks.inboundPacketFn = onInboundPacket;
     iceAgentCallbacks.connectionStateChangedFn = onIceConnectionStateChange;
     iceAgentCallbacks.newLocalCandidateFn = onNewIceLocalCandidate;
+#ifdef ENABLE_KVS_THREADPOOL
     iceAgentCallbacks.setStunServerIpFn = onSetStunServerIp;
+#endif
 
     PROFILE_CALL(CHK_STATUS(createConnectionListener(&pConnectionListener)), "Create connection listener");
     // IceAgent will own the lifecycle of pConnectionListener;
@@ -1184,7 +1189,8 @@ STATUS freePeerConnection(PRtcPeerConnection* ppPeerConnection)
     if (IS_VALID_MUTEX_VALUE(pKvsPeerConnection->twccLock)) {
         if (twccLocked) {
             MUTEX_UNLOCK(pKvsPeerConnection->twccLock);
-            twccLocked = FALSE;
+            // Not currently used since twccLock is freed immediately after. No jumps to CleanUp.
+            // twccLocked = FALSE;
         }
         MUTEX_FREE(pKvsPeerConnection->twccLock);
         pKvsPeerConnection->twccLock = INVALID_MUTEX_VALUE;
@@ -1371,14 +1377,19 @@ CleanUp:
 UINT32 parseExtId(PCHAR extmapValue)
 {
     ENTERS();
-    UINT32 extid = 0;
-    if (extmapValue == NULL && STRCHR(extmapValue, ' ') == NULL) {
-        LEAVES();
-        return 0;
-    }
-    if (STATUS_FAILED(STRTOUI32(extmapValue, STRCHR(extmapValue, ' '), 10, &extid))) {
-        LEAVES();
-        return 0;
+    STATUS retStatus = STATUS_SUCCESS;
+    UINT32 extid;
+
+    CHK(extmapValue != NULL, STATUS_NULL_ARG);
+    CHK(STRCHR(extmapValue, ' ') != NULL, STATUS_INVALID_ARG);
+
+    CHK_STATUS(STRTOUI32(extmapValue, STRCHR(extmapValue, ' '), 10, &extid));
+
+CleanUp:
+    CHK_LOG_ERR(retStatus);
+
+    if (STATUS_FAILED(retStatus)) {
+        extid = 0;
     }
 
     LEAVES();
@@ -1392,6 +1403,8 @@ STATUS setRemoteDescription(PRtcPeerConnection pPeerConnection, PRtcSessionDescr
     PCHAR remoteIceUfrag = NULL, remoteIcePwd = NULL;
     UINT32 i, j;
     PSessionDescription pSessionDescription;
+    BOOL remoteHasTwccExtmap = FALSE, remoteHasTwccRtcpFb = FALSE;
+    UINT16 remoteTwccExtId = 0;
 
     PKvsPeerConnection pKvsPeerConnection = (PKvsPeerConnection) pPeerConnection;
 
@@ -1486,9 +1499,28 @@ STATUS setRemoteDescription(PRtcPeerConnection pPeerConnection, PRtcSessionDescr
                 // The standard dictates clearly that it should be a session level attribute:  https://tools.ietf.org/html/rfc5245#page-76
             } else if (STRCMP(pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeName, "extmap") == 0 &&
                        STRSTR(pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeValue, TWCC_EXT_URL) != NULL) {
-                pKvsPeerConnection->twccExtId = parseExtId(pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeValue);
+                remoteHasTwccExtmap = TRUE;
+                remoteTwccExtId = parseExtId(pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeValue);
+                pKvsPeerConnection->remoteTwccOfferedPerMedia[i] = TRUE;
+            } else if (STRCMP(pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeName, "rtcp-fb") == 0 &&
+                       STRSTR(pSessionDescription->mediaDescriptions[i].sdpAttributes[j].attributeValue, TWCC_SDP_ATTR) != NULL) {
+                remoteHasTwccRtcpFb = TRUE;
             }
         }
+    }
+
+    // Enable TWCC if all 3 conditions are met:
+    // 1: remote has TWCC extmap line
+    // 2: remote has rtcp-fb transport-cc line
+    // 3: local configuration allows it
+    if (pKvsPeerConnection->pTwccManager == NULL) {
+        DLOGD("TWCC disabled by local configuration");
+    } else if (remoteHasTwccExtmap && remoteHasTwccRtcpFb) {
+        pKvsPeerConnection->twccExtId = remoteTwccExtId;
+        DLOGD("TWCC enabled, ext id: %u", pKvsPeerConnection->twccExtId);
+    } else {
+        DLOGD("TWCC not advertised by remote (extmap=%s, rtcp-fb=%s), not enabling", remoteHasTwccExtmap ? "yes" : "no",
+              remoteHasTwccRtcpFb ? "yes" : "no");
     }
 
     CHK(remoteIceUfrag != NULL && remoteIcePwd != NULL, STATUS_SESSION_DESCRIPTION_MISSING_ICE_VALUES);
@@ -2017,7 +2049,11 @@ STATUS twccManagerOnPacketSent(PKvsPeerConnection pKvsPeerConnection, PRtpPacket
     PTwccRtpPacketInfo pTwccRtpPktInfo = NULL;
 
     CHK(pKvsPeerConnection != NULL && pRtpPacket != NULL, STATUS_NULL_ARG);
-    CHK(pKvsPeerConnection->onSenderBandwidthEstimation != NULL && pKvsPeerConnection->pTwccManager != NULL, STATUS_SUCCESS);
+    // Skip TWCC tracking if no callback is set to consume the results
+    CHK((pKvsPeerConnection->onSenderBandwidthEstimation != NULL || pKvsPeerConnection->onPeerCongestionFeedback != NULL ||
+         pKvsPeerConnection->onTwccFeedbackReceived != NULL) &&
+            pKvsPeerConnection->pTwccManager != NULL,
+        STATUS_SUCCESS);
     CHK(TWCC_EXT_PROFILE == pRtpPacket->header.extensionProfile, STATUS_SUCCESS);
 
     MUTEX_LOCK(pKvsPeerConnection->twccLock);
@@ -2039,6 +2075,34 @@ CleanUp:
     }
     CHK_LOG_ERR(retStatus);
 
+    LEAVES();
+    return retStatus;
+}
+
+STATUS peerConnectionUpdateIceServers(PRtcPeerConnection pPeerConnection, PRtcIceServer pIceServers, UINT32 iceServersCount)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    PKvsPeerConnection pKvsPeerConnection = (PKvsPeerConnection) pPeerConnection;
+
+    CHK(pKvsPeerConnection != NULL && pIceServers != NULL, STATUS_NULL_ARG);
+    CHK(iceServersCount > 0, STATUS_INVALID_ARG);
+
+    DLOGI("Updating peer connection with %u new ICE servers", iceServersCount);
+
+    /*
+     * Dynamic ICE server update:
+     * - Add new ICE servers to the ICE agent
+     * - For TURN servers, new relay candidates will be created automatically
+     * - New candidates will be gathered and made available for connectivity checks
+     * - This enables progressive ICE server delivery without disrupting existing connections
+     */
+    CHK_STATUS(iceAgentAddIceServers(pKvsPeerConnection->pIceAgent, pIceServers, iceServersCount));
+
+    DLOGI("Successfully updated peer connection ICE servers");
+
+CleanUp:
+    CHK_LOG_ERR(retStatus);
     LEAVES();
     return retStatus;
 }
@@ -2092,6 +2156,58 @@ STATUS iceAgentGetMetrics(PRtcPeerConnection pPeerConnection, PKvsIceAgentMetric
     }
     CHK_STATUS(getIceAgentStats(pKvsPeerConnection->pIceAgent, pKvsIceAgentMetrics));
 CleanUp:
+    CHK_LOG_ERR(retStatus);
+
+    LEAVES();
+    return retStatus;
+}
+
+STATUS setOnTwccFeedbackReceived(PRtcPeerConnection pPeerConnection, UINT64 customData, RtcOnTwccFeedbackReceived onTwccFbReceived)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    PKvsPeerConnection pKvsPeerConnection = (PKvsPeerConnection) pPeerConnection;
+    BOOL locked = FALSE;
+
+    CHK(pKvsPeerConnection != NULL, STATUS_NULL_ARG);
+    CHK_ERR(IS_VALID_MUTEX_VALUE(pKvsPeerConnection->twccLock), STATUS_INVALID_OPERATION,
+            "TWCC is not enabled; enable sender-side bandwidth estimation to use this callback");
+
+    MUTEX_LOCK(pKvsPeerConnection->twccLock);
+    locked = TRUE;
+    pKvsPeerConnection->onTwccFeedbackReceivedCustomData = customData;
+    pKvsPeerConnection->onTwccFeedbackReceived = onTwccFbReceived;
+
+CleanUp:
+    if (locked) {
+        MUTEX_UNLOCK(pKvsPeerConnection->twccLock);
+    }
+    CHK_LOG_ERR(retStatus);
+
+    LEAVES();
+    return retStatus;
+}
+
+STATUS setOnPeerCongestionFeedbackFn(PRtcPeerConnection pPeerConnection, UINT64 customData, RtcOnPeerCongestionFeedback onPeerCongestionFeedback)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    PKvsPeerConnection pKvsPeerConnection = (PKvsPeerConnection) pPeerConnection;
+    BOOL locked = FALSE;
+
+    CHK(pKvsPeerConnection != NULL, STATUS_NULL_ARG);
+    CHK_ERR(IS_VALID_MUTEX_VALUE(pKvsPeerConnection->twccLock), STATUS_INVALID_OPERATION,
+            "TWCC is not enabled; enable sender-side bandwidth estimation to use this callback");
+
+    MUTEX_LOCK(pKvsPeerConnection->twccLock);
+    locked = TRUE;
+    pKvsPeerConnection->onPeerCongestionFeedbackCustomData = customData;
+    pKvsPeerConnection->onPeerCongestionFeedback = onPeerCongestionFeedback;
+
+CleanUp:
+    if (locked) {
+        MUTEX_UNLOCK(pKvsPeerConnection->twccLock);
+    }
     CHK_LOG_ERR(retStatus);
 
     LEAVES();

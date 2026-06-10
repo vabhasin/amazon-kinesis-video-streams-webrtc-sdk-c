@@ -1,5 +1,10 @@
 # build library from source
 function(build_dependency lib_name)
+  if (WIN32 OR NOT PARALLEL_BUILD)
+    set(PARALLEL_BUILD "")
+  else()
+    set(PARALLEL_BUILD "--parallel")
+  endif()
   set(supported_libs
       gperftools
       gtest
@@ -24,7 +29,11 @@ function(build_dependency lib_name)
   if (${lib_name} STREQUAL "openssl")
     set(lib_file_name ssl)
   elseif(${lib_name} STREQUAL "srtp")
-    set(lib_file_name srtp2)
+    if(USE_LIBSRTP3)
+      set(lib_file_name srtp3)
+    else()
+      set(lib_file_name srtp2)
+    endif()
   elseif(${lib_name} STREQUAL "gperftools")
     set(lib_file_name profiler)
   elseif(${lib_name} STREQUAL "awscpp")
@@ -68,7 +77,7 @@ function(build_dependency lib_name)
     message(FATAL_ERROR "CMake step for lib${lib_name} failed: ${result}")
   endif()
   execute_process(
-    COMMAND ${CMAKE_COMMAND} --build .
+    COMMAND ${CMAKE_COMMAND} --build . ${PARALLEL_BUILD}
     RESULT_VARIABLE result
     WORKING_DIRECTORY ${OPEN_SRC_INSTALL_PREFIX}/lib${lib_name})
   if(result)

@@ -215,6 +215,28 @@ CleanUp:
     return retStatus;
 }
 
+STATUS transceiverSetFmtp(PRtcRtpTransceiver pRtcRtpTransceiver, PCHAR fmtp)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    PKvsRtpTransceiver pKvsRtpTransceiver = (PKvsRtpTransceiver) pRtcRtpTransceiver;
+
+    CHK(pKvsRtpTransceiver != NULL, STATUS_NULL_ARG);
+
+    if (fmtp == NULL || fmtp[0] == '\0') {
+        pKvsRtpTransceiver->fmtpOverride[0] = '\0';
+    } else {
+        CHK(STRLEN(fmtp) <= MAX_SDP_ATTRIBUTE_VALUE_LENGTH, STATUS_INVALID_ARG_LEN);
+        STRNCPY(pKvsRtpTransceiver->fmtpOverride, fmtp, MAX_SDP_ATTRIBUTE_VALUE_LENGTH);
+        pKvsRtpTransceiver->fmtpOverride[MAX_SDP_ATTRIBUTE_VALUE_LENGTH] = '\0';
+    }
+
+CleanUp:
+
+    LEAVES();
+    return retStatus;
+}
+
 STATUS transceiverOnPictureLoss(PRtcRtpTransceiver pRtcRtpTransceiver, UINT64 customData, RtcOnPictureLoss onPictureLoss)
 {
     ENTERS();
@@ -273,6 +295,7 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
     UINT64 randomRtpTimeoffset = 0; // TODO: spec requires random rtp time offset
     UINT64 rtpTimestamp = 0;
     UINT64 now = GETTIME();
+    BOOL verbose = (GET_LOGGER_LOG_LEVEL() == LOG_LEVEL_VERBOSE);
 
     // stats updates
     DOUBLE fps = 0.0;
@@ -282,7 +305,7 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
 
     // temp vars :(
     UINT64 tmpFrames, tmpTime;
-    UINT16 twsn;
+    UINT16 twsn, firstSeqNum, lastSeqNum;
     UINT32 extpayload;
     STATUS sendStatus;
 
@@ -358,12 +381,16 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
 
     CHK_STATUS(constructRtpPackets(pPayloadArray, pKvsRtpTransceiver->sender.payloadType, pKvsRtpTransceiver->sender.sequenceNumber, rtpTimestamp,
                                    pKvsRtpTransceiver->sender.ssrc, pPacketList, pPayloadArray->payloadSubLenSize));
+
+    firstSeqNum = pKvsRtpTransceiver->sender.sequenceNumber;
+    lastSeqNum = GET_UINT16_SEQ_NUM(pKvsRtpTransceiver->sender.sequenceNumber + pPayloadArray->payloadSubLenSize - 1);
+
     pKvsRtpTransceiver->sender.sequenceNumber = GET_UINT16_SEQ_NUM(pKvsRtpTransceiver->sender.sequenceNumber + pPayloadArray->payloadSubLenSize);
 
     bufferAfterEncrypt = (pKvsRtpTransceiver->sender.payloadType == pKvsRtpTransceiver->sender.rtxPayloadType);
     for (i = 0; i < pPayloadArray->payloadSubLenSize; i++) {
         pRtpPacket = pPacketList + i;
-        if (pKvsRtpTransceiver->pKvsPeerConnection->twccExtId != 0) {
+        if (pKvsRtpTransceiver->twccEnabled) {
             pRtpPacket->header.extension = TRUE;
             pRtpPacket->header.extensionProfile = TWCC_EXT_PROFILE;
             pRtpPacket->header.extensionLength = SIZEOF(UINT32);
@@ -394,7 +421,7 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
             framesDiscardedOnSend = 1;
             SAFE_MEMFREE(rawPacket);
             continue;
-        } else if (sendStatus == STATUS_SUCCESS && pKvsRtpTransceiver->pKvsPeerConnection->twccExtId != 0) {
+        } else if (sendStatus == STATUS_SUCCESS && pKvsRtpTransceiver->twccEnabled) {
             pRtpPacket->sentTime = GETTIME();
             twccManagerOnPacketSent(pKvsPeerConnection, pRtpPacket);
         }
@@ -416,6 +443,23 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
         SAFE_MEMFREE(rawPacket);
     }
 
+    if (verbose) {
+        // track: video/audio
+        // pts: presentation timestamp
+        // rtpTs: RTP timestamp
+        // size: raw frame size
+        // rtpPayload: total RTP payload after packetization, but before serialization
+        // wireSize: total bytes sent on the wire (RTP headers + payload + SRTP overhead)
+        // seqNums: RTP sequence number range of packetized frame
+        // keyFrame: "yes"/"no"/"N/A" (N/A for audio)
+        DLOGV("debug frame info: track=%s, pts=%" PRIu64 ", rtpTs=%" PRIu64 ", size=%uB, rtpPayload=%uB, wireSize=%uB, seqNums=%u-%u, keyFrame=%s",
+              MEDIA_STREAM_TRACK_KIND_VIDEO == pKvsRtpTransceiver->sender.track.kind ? "video" : "audio", pFrame->presentationTs, rtpTimestamp,
+              pFrame->size, pPayloadArray->payloadLength, bytesSent + headerBytesSent, firstSeqNum, lastSeqNum,
+              MEDIA_STREAM_TRACK_KIND_VIDEO != pKvsRtpTransceiver->sender.track.kind ? "N/A"
+                  : CHECK_FRAME_FLAG_KEY_FRAME(pFrame->flags)                        ? "yes"
+                                                                                     : "no");
+    }
+
     if (MEDIA_STREAM_TRACK_KIND_VIDEO == pKvsRtpTransceiver->sender.track.kind) {
         framesSent++;
     }
@@ -429,35 +473,38 @@ CleanUp:
     if (locked) {
         MUTEX_UNLOCK(pKvsPeerConnection->pSrtpSessionLock);
     }
-    MUTEX_LOCK(pKvsRtpTransceiver->statsLock);
-    pKvsRtpTransceiver->outboundStats.totalEncodedBytesTarget += pFrame->size;
-    pKvsRtpTransceiver->outboundStats.framesEncoded += frames;
-    pKvsRtpTransceiver->outboundStats.keyFramesEncoded += keyframes;
-    if (fps > 0.0) {
-        pKvsRtpTransceiver->outboundStats.framesPerSecond = fps;
-    }
-    pKvsRtpTransceiver->sender.lastKnownFrameCountTime = now;
-    pKvsRtpTransceiver->sender.lastKnownFrameCount = pKvsRtpTransceiver->outboundStats.framesEncoded;
-    pKvsRtpTransceiver->outboundStats.sent.bytesSent += bytesSent;
-    pKvsRtpTransceiver->outboundStats.sent.packetsSent += packetsSent;
-    if (lastPacketSentTimestamp > 0) {
-        pKvsRtpTransceiver->outboundStats.lastPacketSentTimestamp = lastPacketSentTimestamp;
-    }
-    pKvsRtpTransceiver->outboundStats.headerBytesSent += headerBytesSent;
-    pKvsRtpTransceiver->outboundStats.framesSent += framesSent;
-    if (pKvsRtpTransceiver->outboundStats.framesPerSecond > 0.0) {
-        if (pFrame->size >=
-            pKvsRtpTransceiver->outboundStats.targetBitrate / pKvsRtpTransceiver->outboundStats.framesPerSecond * HUGE_FRAME_MULTIPLIER) {
-            pKvsRtpTransceiver->outboundStats.hugeFramesSent++;
-        }
-    }
-    // iceAgentSendPacket tries to send packet immediately, explicitly settings totalPacketSendDelay to 0
-    pKvsRtpTransceiver->outboundStats.totalPacketSendDelay = 0;
 
-    pKvsRtpTransceiver->outboundStats.framesDiscardedOnSend += framesDiscardedOnSend;
-    pKvsRtpTransceiver->outboundStats.packetsDiscardedOnSend += packetsDiscardedOnSend;
-    pKvsRtpTransceiver->outboundStats.bytesDiscardedOnSend += bytesDiscardedOnSend;
-    MUTEX_UNLOCK(pKvsRtpTransceiver->statsLock);
+    if (pKvsRtpTransceiver != NULL && pFrame != NULL) {
+        MUTEX_LOCK(pKvsRtpTransceiver->statsLock);
+        pKvsRtpTransceiver->outboundStats.totalEncodedBytesTarget += pFrame->size;
+        pKvsRtpTransceiver->outboundStats.framesEncoded += frames;
+        pKvsRtpTransceiver->outboundStats.keyFramesEncoded += keyframes;
+        if (fps > 0.0) {
+            pKvsRtpTransceiver->outboundStats.framesPerSecond = fps;
+        }
+        pKvsRtpTransceiver->sender.lastKnownFrameCountTime = now;
+        pKvsRtpTransceiver->sender.lastKnownFrameCount = pKvsRtpTransceiver->outboundStats.framesEncoded;
+        pKvsRtpTransceiver->outboundStats.sent.bytesSent += bytesSent;
+        pKvsRtpTransceiver->outboundStats.sent.packetsSent += packetsSent;
+        if (lastPacketSentTimestamp > 0) {
+            pKvsRtpTransceiver->outboundStats.lastPacketSentTimestamp = lastPacketSentTimestamp;
+        }
+        pKvsRtpTransceiver->outboundStats.headerBytesSent += headerBytesSent;
+        pKvsRtpTransceiver->outboundStats.framesSent += framesSent;
+        if (pKvsRtpTransceiver->outboundStats.framesPerSecond > 0.0) {
+            if (pFrame->size >=
+                pKvsRtpTransceiver->outboundStats.targetBitrate / pKvsRtpTransceiver->outboundStats.framesPerSecond * HUGE_FRAME_MULTIPLIER) {
+                pKvsRtpTransceiver->outboundStats.hugeFramesSent++;
+            }
+        }
+        // iceAgentSendPacket tries to send packet immediately, explicitly settings totalPacketSendDelay to 0
+        pKvsRtpTransceiver->outboundStats.totalPacketSendDelay = 0;
+
+        pKvsRtpTransceiver->outboundStats.framesDiscardedOnSend += framesDiscardedOnSend;
+        pKvsRtpTransceiver->outboundStats.packetsDiscardedOnSend += packetsDiscardedOnSend;
+        pKvsRtpTransceiver->outboundStats.bytesDiscardedOnSend += bytesDiscardedOnSend;
+        MUTEX_UNLOCK(pKvsRtpTransceiver->statsLock);
+    }
 
     SAFE_MEMFREE(rawPacket);
     SAFE_MEMFREE(pPacketList);
