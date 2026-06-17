@@ -11,6 +11,7 @@ project(KinesisVideoWebRTCClient VERSION 1.19.0 LANGUAGES C)
 option(ADD_MUCLIBC "Add -muclibc c flag" OFF)
 option(BUILD_DEPENDENCIES "Whether or not to build depending libraries from source" ON)
 option(USE_OPENSSL "Use openssl as crypto library" ON)
+option(USE_OPENSSL3 "Build/use OpenSSL 3.x (default: 1.1.1x). Auto-detected when using system OpenSSL 3.x." OFF)
 option(USE_MBEDTLS "Use mbedtls as crypto library" OFF)
 option(BUILD_STATIC_LIBS "Build all libraries statically. (This includes third-party libraries.)" OFF)
 
@@ -215,7 +216,8 @@ if(BUILD_DEPENDENCIES OR BUILD_WEBSOCKETS OR BUILD_SRTP OR BUILD_USRSCTP)
       set(BUILD_ARGS -DBUILD_STATIC_LIBS=${BUILD_STATIC_LIBS}
                      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
                      -DBUILD_OPENSSL_PLATFORM=${BUILD_OPENSSL_PLATFORM}
-                     -DOPENSSL_EXTRA=${OPENSSL_EXTRA})
+                     -DOPENSSL_EXTRA=${OPENSSL_EXTRA}
+                     -DUSE_OPENSSL3=${USE_OPENSSL3})
       build_dependency(openssl ${BUILD_ARGS})
       set(OPENSSL_ROOT_DIR ${OPEN_SRC_INSTALL_PREFIX})
     elseif(USE_MBEDTLS)
@@ -224,6 +226,23 @@ if(BUILD_DEPENDENCIES OR BUILD_WEBSOCKETS OR BUILD_SRTP OR BUILD_USRSCTP)
                      -DBUILD_OLD_MBEDTLS_VERSION=${BUILD_OLD_MBEDTLS_VERSION}
                       "-DCMAKE_C_FLAGS=${CMAKE_C_FLAGS} -std=c99")
         build_dependency(mbedtls ${BUILD_ARGS})
+    endif()
+
+    if(BUILD_TEST)
+      build_dependency(gtest)
+
+      if(ENABLE_AWS_SDK_IN_TESTS)
+        build_dependency(awscpp)
+      endif()
+
+    endif()
+
+    if(BUILD_BENCHMARK)
+      build_dependency(benchmark)
+    endif()
+
+    if (LINK_PROFILER)
+      build_dependency(gperftools)
     endif()
   endif()
 
@@ -292,23 +311,6 @@ if(BUILD_DEPENDENCIES OR BUILD_WEBSOCKETS OR BUILD_SRTP OR BUILD_USRSCTP)
         -DCMAKE_C_FLAGS=${CMAKE_C_FLAGS})
     build_dependency(usrsctp ${BUILD_ARGS})
   endif()
-
-  if(BUILD_TEST)
-    build_dependency(gtest)
-
-    if(ENABLE_AWS_SDK_IN_TESTS)
-      build_dependency(awscpp)
-    endif()
-
-  endif()
-
-  if(BUILD_BENCHMARK)
-    build_dependency(benchmark)
-  endif()
-
-  if (LINK_PROFILER)
-    build_dependency(gperftools)
-  endif()
   message(STATUS "Finished building dependencies.")
 endif()
 
@@ -332,6 +334,18 @@ find_package(PkgConfig REQUIRED)
 if (USE_OPENSSL)
   find_package(OpenSSL REQUIRED)
   set(OPEN_SRC_INCLUDE_DIRS ${OPEN_SRC_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
+
+  # Auto-detect OpenSSL 3.x from system when not already set
+  if(NOT USE_OPENSSL3)
+    if(OPENSSL_VERSION VERSION_GREATER_EQUAL "3.0.0")
+      message(STATUS "Auto-detected system OpenSSL ${OPENSSL_VERSION} (>= 3.0). Enabling USE_OPENSSL3.")
+      set(USE_OPENSSL3 ON)
+    endif()
+  endif()
+
+  if(USE_OPENSSL3)
+    add_definitions(-DKVS_USE_OPENSSL3)
+  endif()
 else()
   find_package(MbedTLS REQUIRED)
   set(OPEN_SRC_INCLUDE_DIRS ${OPEN_SRC_INCLUDE_DIRS} ${MBEDTLS_INCLUDE_DIRS})
