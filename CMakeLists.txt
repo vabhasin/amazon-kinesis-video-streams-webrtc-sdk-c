@@ -250,6 +250,11 @@ if(BUILD_DEPENDENCIES OR BUILD_WEBSOCKETS OR BUILD_SRTP OR BUILD_USRSCTP)
   if (USE_OPENSSL)
     find_package(OpenSSL REQUIRED)
     set(OPEN_SRC_INCLUDE_DIRS ${OPEN_SRC_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
+
+    # Ensure downstream dependency builds (autotools and cmake) can find OpenSSL.
+    # OpenSSL 3.x installs to lib64/ on some platforms; we add both lib/ and lib64/
+    # pkgconfig paths so pkg-config based builds (e.g. libsrtp) work correctly.
+    set(ENV{PKG_CONFIG_PATH} "${OPEN_SRC_INSTALL_PREFIX}/lib64/pkgconfig:${OPEN_SRC_INSTALL_PREFIX}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
   else()
     find_package(MbedTLS REQUIRED)
     set(OPEN_SRC_INCLUDE_DIRS ${OPEN_SRC_INCLUDE_DIRS} ${MBEDTLS_INCLUDE_DIRS})

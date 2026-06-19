@@ -1,0 +1,147 @@
+name: WebRTC C SDK CI - OpenSSL 3.x
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+      - 'test-pr-*'
+      - opensslv3
+  pull_request:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_KVS_LOG_LEVEL: 7
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  mac-openssl3-tests:
+    strategy:
+      matrix:
+        os:
+          - name: Mac Intel
+            runner: macos-15-intel
+          - name: Mac Apple Silicon
+            runner: macos-15
+        compiler: [ gcc, clang ]
+        config:
+          - name: Shared OpenSSL3 from source
+            cmake_flags: "-DBUILD_TEST=ON -DUSE_OPENSSL3=ON -DPARALLEL_BUILD=ON"
+      fail-fast: false
+
+    permissions:
+      id-token: write
+      contents: read
+
+    runs-on: ${{ matrix.os.runner }}
+    name: ${{ matrix.os.name }}, ${{ matrix.compiler }}, ${{ matrix.config.name }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup cmake
+        uses: jwlawson/actions-setup-cmake@v2.2.0
+        with:
+          cmake-version: '3.x'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Install GStreamer
+        run: |
+          brew install gstreamer
+
+      - name: Configure and build ${{ matrix.config.name }}
+        run: |
+          export CC="clang"
+          export CXX="clang++"
+          echo "Using CC: $CC and CXX: $CXX"
+
+          mkdir -p build
+          cd build
+          cmake .. ${{ matrix.config.cmake_flags }} -DENABLE_AWS_SDK_IN_TESTS=OFF
+          make -j$(sysctl -n hw.ncpu)
+        shell: bash
+
+      - name: Run tests
+        working-directory: ./build
+        run: |
+          ./tst/webrtc_client_test
+        shell: bash
+
+  ubuntu-openssl3-tests:
+    strategy:
+      matrix:
+        container:
+          - name: Ubuntu 20.04
+            image: public.ecr.aws/ubuntu/ubuntu:20.04_stable
+          - name: Ubuntu 22.04
+            image: public.ecr.aws/ubuntu/ubuntu:22.04_stable
+        compiler: [ gcc, clang ]
+      fail-fast: false
+
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.container.image }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    name: ${{ matrix.container.name }}-${{ matrix.compiler }}-openssl3-from-source
+    timeout-minutes: 90
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y git cmake build-essential pkg-config file
+
+      - name: Setup GCC
+        if: ${{ matrix.compiler == 'gcc' }}
+        run: |
+          gcc --version
+          echo "CC=gcc" >> $GITHUB_ENV
+          echo "CXX=g++" >> $GITHUB_ENV
+
+      - name: Setup Clang
+        if: ${{ matrix.compiler == 'clang' }}
+        run: |
+          apt-get -y install clang
+          clang --version
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
+
+      - name: Setup cmake
+        uses: jwlawson/actions-setup-cmake@v2.2.0
+        with:
+          cmake-version: '3.x'
+
+      - name: Build repository
+        shell: bash
+        run: |
+          mkdir build && cd build
+          cmake .. -DBUILD_TEST=ON -DENABLE_AWS_SDK_IN_TESTS=OFF -DUSE_OPENSSL3=ON -DPARALLEL_BUILD=ON
+          make -j
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Run tests
+        working-directory: ./build
+        run: |
+          ./tst/webrtc_client_test
